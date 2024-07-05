@@ -1,0 +1,19 @@
+[package]
+name = "rangelist"
+version = "0.1.0"
+description = "A representation of sets as lists of inclusive ranges"
+authors = ["Jip J. Dekker <jip@dekker.one>"]
+
+homepage = "https://www.minizinc.org/"
+repository = "https://github.com/shackle-rs/shackle/"
+license = "MPL-2.0"
+keywords = ["set", "range", "list"]
+
+edition = "2021"
+
+[dependencies]
+castaway = "0.2"
+
+[dev-dependencies]
+expect-test = "1.4"
+
