@@ -13,6 +13,7 @@ edition = "2021"
 
 [dependencies]
 castaway = "0.2"
+num = "0.4"
 
 [dev-dependencies]
 expect-test = "1.4"

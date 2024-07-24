@@ -16,21 +16,7 @@ use std::{
 };
 
 use castaway::match_type;
-
-/// Macro that implments `RangeList::card` for integral types.
-macro_rules! impl_card {
-	( $($type:ty),* $(,)? ) => {
-		$(
-			impl RangeList<$type> {
-				/// Returns the number of elements contained within the RangeList.
-				pub fn card(&self) -> usize {
-					self.iter().map(|r| (r.end() - r.start() + 1) as usize).sum()
-				}
-			}
-		)*
-	};
-}
-impl_card!(i8, i16, i32, i64, i128, u8, u16, u32, u64, u128);
+use num::{cast::AsPrimitive, Integer};
 
 /// A sorted collection of inclusive ranges that can be used to represent
 /// non-continuous sets of values.
@@ -65,6 +51,101 @@ pub trait IntervalIter<E: PartialOrd> {
 	type Iter: Iterator<Item = RangeInclusive<E>>;
 	/// Returns an iterator over the ordered intervals.
 	fn intervals(&self) -> Self::Iter;
+
+	/// Returns the number of elements contained within the RangeList.
+	fn card(&self) -> usize
+	where
+		E: AsPrimitive<usize> + Integer,
+	{
+		self.intervals()
+			.map(|r| {
+				let mut diff = *r.end() - *r.start();
+				diff.inc();
+				diff.as_()
+			})
+			.sum()
+	}
+
+	/// Compute RangeList without any of the elements in the ranges of `other`.
+	///
+	/// # Warning
+	///
+	/// The implementation decrements the lowest value of `self` and increments
+	/// the largest value of `self`. This could cause a panic if this causes
+	/// overflow in `E`.
+	fn diff<O, R>(&self, other: &O) -> R
+	where
+		E: Clone + Integer,
+		O: IntervalIter<E>,
+		R: FromIterator<RangeInclusive<E>>,
+	{
+		let next_higher = |x: &E| {
+			let mut v = x.clone();
+			v.inc();
+			v
+		};
+		let next_lower = |x: &E| {
+			let mut v = x.clone();
+			v.dec();
+			v
+		};
+		let mut lhs = self.intervals().peekable();
+		if lhs.peek().is_none() {
+			return R::from_iter([]);
+		}
+		let mut rhs = other.intervals().peekable();
+		let mut ranges = Vec::new();
+		let mut max = next_lower(lhs.peek().unwrap().start());
+		loop {
+			if lhs.peek().is_none() {
+				break;
+			}
+
+			let mut min = next_higher(&max);
+			max = lhs.peek().unwrap().end().clone();
+			if min > *lhs.peek().unwrap().end() {
+				let _ = lhs.next();
+				if let Some(r) = lhs.peek() {
+					min = r.start().clone();
+					max = r.end().clone();
+				} else {
+					break;
+				}
+			}
+			while let Some(r) = rhs.peek() {
+				if r.end() < lhs.peek().unwrap().start() {
+					let _ = rhs.next();
+				} else {
+					break;
+				}
+			}
+			if let Some(r) = rhs.peek() {
+				if *r.start() <= max {
+					// Interval min..max must be shurk
+					if min >= *r.start() && max <= *r.end() {
+						// Interval min..max is completely covered by r
+						continue;
+					}
+					if *r.start() <= min {
+						// Interval min..max overlaps on the left
+						min = next_higher(r.end());
+						// Search for max
+						let _ = rhs.next();
+						if let Some(r) = rhs.peek() {
+							if *r.start() <= max {
+								max = next_lower(r.start());
+							}
+						}
+					} else {
+						// Interval overlaps on the right
+						max = next_lower(r.start());
+					}
+				}
+			}
+			ranges.push(min..=max.clone());
+		}
+		ranges.into_iter().collect()
+	}
 
 	/// Returns whether `self` and `other` are disjoint sets
 	fn disjoint<O: IntervalIter<E> + ?Sized>(&self, other: &O) -> bool {
@@ -539,6 +620,46 @@ mod tests {
 
 		let float_range = RangeList::from_iter([0.1..=3.2, 8.1..=50.0]);
 		assert_eq!(float_range.to_string(), "0.1..3.2 union 8.1..50.0");
+	}
+
+	#[test]
+	fn test_set_diff() {
+		let empty: RangeList<i64> = RangeList::default();
+		// TODO: Can we change the diff implementation so we don't need the additional space.
+		let inf: RangeList<i64> = RangeList::from_iter([i64::MIN + 1..=i64::MAX - 1]);
+		let res: RangeList<_> = empty.diff(&empty);
+		assert_eq!(res, empty);
+		let res: RangeList<_> = inf.diff(&inf);
+		assert_eq!(res, empty);
+		let res: RangeList<_> = empty.diff(&inf);
+		assert_eq!(res, empty);
+		let res: RangeList<_> = inf.diff(&empty);
+		assert_eq!(res, inf);
+
+		let x = RangeList::from(1..=5);
+		let y = RangeList::from(4..=9);
+		let z: RangeList<_> = x.diff(&y);
+		expect!["1..3"].assert_eq(&z.to_string());
+		let z: RangeList<_> = y.diff(&x);
+		expect!["6..9"].assert_eq(&z.to_string());
+		let z: RangeList<_> = x.diff(&x);
+		expect!["1..0"].assert_eq(&z.to_string());
+		let z: RangeList<_> = y.diff(&y);
+		expect!["1..0"].assert_eq(&z.to_string());
+		let z: RangeList<_> = x.diff(&RangeList::from_iter([1..=2, 5..=5]));
+		expect!["3..4"].assert_eq(&z.to_string());
+		let z: RangeList<_> = x.diff(&RangeList::from(2..=4));
+		expect!["1..1 union 5..5"].assert_eq(&z.to_string());
+		let z: RangeList<_> = y.diff(&RangeList::from_iter([5..=5, 7..=7, 9..=9]));
+		expect!["4..4 union 6..6 union 8..8"].assert_eq(&z.to_string());
+
+		let x = RangeList::from_iter([1..=3, 5..=7, 9..=11]);
+		let z: RangeList<_> = x.diff(&y);
+		expect!["1..3 union 10..11"].assert_eq(&z.to_string());
+		let z: RangeList<_> = x.diff(&RangeList::from(-1..=8));
+		expect!["9..11"].assert_eq(&z.to_string());
+		let z: RangeList<_> = x.diff(&RangeList::from_iter([4..=4, 8..=8]));
+		assert_eq!(x, z);
 	}
 
 	#[test]
