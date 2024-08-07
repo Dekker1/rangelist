@@ -12,38 +12,44 @@
 use std::{
 	collections::{BTreeSet, HashSet},
 	fmt::{Debug, Display},
-	iter::Map,
+	iter::{Map, Peekable},
 	ops::RangeInclusive,
 };
 
 use castaway::match_type;
 use num::{cast::AsPrimitive, Integer};
 
-/// A sorted collection of inclusive ranges that can be used to represent
-/// non-continuous sets of values.
-///
-/// # Warning
-///
-/// Although [`RangeList`] can be constructed for elements that do not implement
-/// [`std::cmp::Ord`], but do implement [`std::cmp::PartialOrd`], constructor
-/// methods, such as the [`FromIterator`] implementation, will panic if the used
-/// boundary values cannot be sorted. This requirement allows the usage of types
-/// like [`f64`], as long as the user can guarantee that values that cannot be
-/// ordered, like `NaN`, will not appear.
-#[derive(Default, Clone, PartialEq, Eq, Hash, PartialOrd)]
-pub struct RangeList<E: PartialOrd> {
-	/// Memory representation of the ranges
-	ranges: Vec<(E, E)>,
+/// An iterator combinator that given two iterators yielding ordered ranges,
+/// yields the ordered ranges of elements that are in the ranges yielded by
+/// `lhs` iterator, but does not include elements that are in the ranges yielded
+/// by the `rhs` iterator.
+#[derive(Debug)]
+pub struct DiffIter<
+	E: Clone + Integer,
+	I: Iterator<Item = RangeInclusive<E>>,
+	J: Iterator<Item = RangeInclusive<E>>,
+> {
+	/// Iterator yielding the ranges of the elements to be included
+	lhs: Peekable<I>,
+	/// Iterator yielding the ranges of the elements to be excluded
+	rhs: Peekable<J>,
+	/// The maximum of the last range yielded
+	max: E,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-enum RangeOrdering {
-	/// A compared range is strictly less than another.
-	Less = -1,
-	/// A compared range overlaps with another.
-	Overlap = 0,
-	/// A compared range is strictly greater than another.
-	Greater = 1,
+/// An iterator combinator that given two iterators yielding ordered ranges,
+/// yields the ordered ranges that are in the intersection of the ranges yielded
+/// by the iterators.
+#[derive(Debug)]
+pub struct IntersectIter<
+	E: PartialOrd,
+	I: Iterator<Item = RangeInclusive<E>>,
+	J: Iterator<Item = RangeInclusive<E>>,
+> {
+	/// Iterator yielding the ranges of the left-hand side of the intersection
+	lhs: Peekable<I>,
+	/// Iterator yielding the ranges of the right-hand side of the intersection
+	rhs: Peekable<J>,
 }
 
 /// A trait that provides operations on iterators of orderdered intervals.
@@ -80,72 +86,7 @@ pub trait IntervalIterator<E: PartialOrd> {
 		O: IntervalIterator<E>,
 		R: FromIterator<RangeInclusive<E>>,
 	{
-		let next_higher = |x: &E| {
-			let mut v = x.clone();
-			v.inc();
-			v
-		};
-		let next_lower = |x: &E| {
-			let mut v = x.clone();
-			v.dec();
-			v
-		};
-		let mut lhs = self.intervals().peekable();
-		if lhs.peek().is_none() {
-			return R::from_iter([]);
-		}
-		let mut rhs = other.intervals().peekable();
-		let mut ranges = Vec::new();
-		let mut max = next_lower(lhs.peek().unwrap().start());
-		loop {
-			if lhs.peek().is_none() {
-				break;
-			}
-
-			let mut min = next_higher(&max);
-			max = lhs.peek().unwrap().end().clone();
-			if min > *lhs.peek().unwrap().end() {
-				let _ = lhs.next();
-				if let Some(r) = lhs.peek() {
-					min = r.start().clone();
-					max = r.end().clone();
-				} else {
-					break;
-				}
-			}
-			while let Some(r) = rhs.peek() {
-				if r.end() < lhs.peek().unwrap().start() {
-					let _ = rhs.next();
-				} else {
-					break;
-				}
-			}
-			if let Some(r) = rhs.peek() {
-				if *r.start() <= max {
-					// Interval min..max must be shurk
-					if min >= *r.start() && max <= *r.end() {
-						// Interval min..max is completely covered by r
-						continue;
-					}
-					if *r.start() <= min {
-						// Interval min..max overlaps on the left
-						min = next_higher(r.end());
-						// Search for max
-						let _ = rhs.next();
-						if let Some(r) = rhs.peek() {
-							if *r.start() <= max {
-								max = next_lower(r.start());
-							}
-						}
-					} else {
-						// Interval overlaps on the right
-						max = next_lower(r.start());
-					}
-				}
-			}
-			ranges.push(min..=max.clone());
-		}
-		ranges.into_iter().collect()
+		DiffIter::from_iters(self.intervals(), other.intervals()).collect()
 	}
 
 	/// Returns whether `self` and `other` are disjoint sets
@@ -175,28 +116,7 @@ pub trait IntervalIterator<E: PartialOrd> {
 		O: IntervalIterator<E>,
 		R: FromIterator<RangeInclusive<E>>,
 	{
-		let mut lhs = self.intervals().peekable();
-		let mut rhs = other.intervals().peekable();
-		let mut ranges = Vec::new();
-		while let (Some(l), Some(r)) = (lhs.peek(), rhs.peek()) {
-			match overlap(l, r) {
-				RangeOrdering::Less => {
-					let _ = lhs.next();
-				}
-				RangeOrdering::Greater => {
-					let _ = rhs.next();
-				}
-				RangeOrdering::Overlap => {
-					ranges.push(max(l.start(), r.start()).clone()..=min(l.end(), r.end()).clone());
-					if l.end() <= r.end() {
-						let _ = lhs.next();
-					} else {
-						let _ = rhs.next();
-					}
-				}
-			}
-		}
-		ranges.into_iter().collect()
+		IntersectIter::from_iters(self.intervals(), other.intervals()).collect()
 	}
 
 	/// Returns whether `self` is a subset of `other`
@@ -235,58 +155,50 @@ pub trait IntervalIterator<E: PartialOrd> {
 		O: IntervalIterator<E>,
 		R: FromIterator<RangeInclusive<E>>,
 	{
-		let mut lhs = self.intervals().peekable();
-		let mut rhs = other.intervals().peekable();
-		let mut ranges = Vec::new();
-		while lhs.peek().is_some() || rhs.peek().is_some() {
-			match (lhs.peek(), rhs.peek()) {
-				(Some(l), None) => {
-					ranges.push(l.clone());
-					let _ = lhs.next();
-				}
-				(None, Some(r)) => {
-					ranges.push(r.clone());
-					let _ = rhs.next();
-				}
-				(Some(l), Some(r)) => match overlap(l, r) {
-					RangeOrdering::Less => {
-						ranges.push(l.clone());
-						let _ = lhs.next();
-					}
-					RangeOrdering::Greater => {
-						ranges.push(r.clone());
-						let _ = rhs.next();
-					}
-					RangeOrdering::Overlap => {
-						let mut ext =
-							min(l.start(), r.start()).clone()..=max(l.end(), r.end()).clone();
-						let _ = lhs.next();
-						let _ = rhs.next();
-						loop {
-							if let Some(l) = lhs.peek() {
-								if overlap(&ext, l) == RangeOrdering::Overlap {
-									ext = ext.start().clone()..=max(ext.end(), l.end()).clone();
-									let _ = lhs.next();
-									continue;
-								}
-							}
-							if let Some(r) = rhs.peek() {
-								if overlap(&ext, r) == RangeOrdering::Overlap {
-									ext = ext.start().clone()..=max(ext.end(), r.end()).clone();
-									let _ = rhs.next();
-									continue;
-								}
-							}
-							break;
-						}
-						ranges.push(ext);
-					}
-				},
-				(None, None) => unreachable!(),
-			}
-		}
-		ranges.into_iter().collect()
+		UnionIter::from_iters(self.intervals(), other.intervals()).collect()
 	}
+}
+
+/// A sorted collection of inclusive ranges that can be used to represent
+/// non-continuous sets of values.
+///
+/// # Warning
+///
+/// Although [`RangeList`] can be constructed for elements that do not implement
+/// [`std::cmp::Ord`], but do implement [`std::cmp::PartialOrd`], constructor
+/// methods, such as the [`FromIterator`] implementation, will panic if the used
+/// boundary values cannot be sorted. This requirement allows the usage of types
+/// like [`f64`], as long as the user can guarantee that values that cannot be
+/// ordered, like `NaN`, will not appear.
+#[derive(Default, Clone, PartialEq, Eq, Hash, PartialOrd)]
+pub struct RangeList<E: PartialOrd> {
+	/// Memory representation of the ranges
+	ranges: Vec<(E, E)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum RangeOrdering {
+	/// A compared range is strictly less than another.
+	Less = -1,
+	/// A compared range overlaps with another.
+	Overlap = 0,
+	/// A compared range is strictly greater than another.
+	Greater = 1,
+}
+
+/// An iterator combinator that given two iterators yielding ordered ranges,
+/// yields the ordered ranges that are in the union of the ranges yielded by the
+/// iterators.
+#[derive(Debug)]
+pub struct UnionIter<
+	E: PartialOrd,
+	I: Iterator<Item = RangeInclusive<E>>,
+	J: Iterator<Item = RangeInclusive<E>>,
+> {
+	/// Iterator yielding the ranges of the left-hand side of the union
+	lhs: Peekable<I>,
+	/// Iterator yielding the ranges of the right-hand side of the union
+	rhs: Peekable<J>,
 }
 
 /// Returns the maximum of two values that implement PartialOrd
@@ -326,6 +238,106 @@ impl<E: Clone + Ord> IntervalIterator<E> for BTreeSet<E> {
 	}
 }
 
+impl<E: Clone + Integer, I, J> DiffIter<E, I, J>
+where
+	I: Iterator<Item = RangeInclusive<E>>,
+	J: Iterator<Item = RangeInclusive<E>>,
+{
+	/// Create a new [`DiffIter`] from two iterators yielding ordered ranges.
+	pub fn from_iters(lhs: I, rhs: J) -> Self {
+		let mut lhs = lhs.peekable();
+		Self {
+			max: lhs
+				.peek()
+				.map(|r| Self::next_lower(r.start()))
+				.unwrap_or_else(E::zero),
+			lhs,
+			rhs: rhs.peekable(),
+		}
+	}
+
+	/// Create a new [`DiffIter`] from two set types that implement the [`IntervalIterator`] trait.
+	pub fn new<A, B>(lhs: &A, rhs: &B) -> Self
+	where
+		A: IntervalIterator<E, IntervalIter = I>,
+		B: IntervalIterator<E, IntervalIter = J>,
+	{
+		Self::from_iters(lhs.intervals(), rhs.intervals())
+	}
+
+	/// Returns the next higher value of `x`
+	fn next_higher(x: &E) -> E {
+		let mut v = x.clone();
+		v.inc();
+		v
+	}
+
+	/// Returns the next lower value of `x`
+	fn next_lower(x: &E) -> E {
+		let mut v = x.clone();
+		v.dec();
+		v
+	}
+}
+
+impl<E: Clone + Integer, I, J> Iterator for DiffIter<E, I, J>
+where
+	I: Iterator<Item = RangeInclusive<E>>,
+	J: Iterator<Item = RangeInclusive<E>>,
+{
+	type Item = RangeInclusive<E>;
+
+	fn next(&mut self) -> Option<Self::Item> {
+		loop {
+			// If LHS is empty, return None
+			let _ = self.lhs.peek()?;
+
+			let mut min = Self::next_higher(&self.max);
+			self.max = self.lhs.peek().unwrap().end().clone();
+			if min > *self.lhs.peek().unwrap().end() {
+				let _ = self.lhs.next();
+				if let Some(r) = self.lhs.peek() {
+					min = r.start().clone();
+					self.max = r.end().clone();
+				} else {
+					return None;
+				}
+			}
+			while let Some(r) = self.rhs.peek() {
+				if r.end() < self.lhs.peek().unwrap().start() {
+					let _ = self.rhs.next();
+				} else {
+					break;
+				}
+			}
+			if let Some(r) = self.rhs.peek() {
+				if *r.start() <= self.max {
+					// Interval min..max must be shurk
+					if min >= *r.start() && self.max <= *r.end() {
+						// Interval min..max is completely covered by r
+						continue;
+					}
+					if *r.start() <= min {
+						// Interval min..max overlaps on the left
+						min = Self::next_higher(r.end());
+						// Search for max
+						let _ = self.rhs.next();
+						if let Some(r) = self.rhs.peek() {
+							if *r.start() <= self.max {
+								self.max = Self::next_lower(r.start());
+							}
+						}
+					} else {
+						// Interval overlaps on the right
+						self.max = Self::next_lower(r.start());
+					}
+				}
+			}
+			return Some(min..=self.max.clone());
+		}
+	}
+}
+
 impl<E: Clone + Ord> IntervalIterator<E> for HashSet<E> {
 	type IntervalIter = Map<<Vec<E> as IntoIterator>::IntoIter, fn(E) -> RangeInclusive<E>>;
 
@@ -333,6 +345,60 @@ impl<E: Clone + Ord> IntervalIterator<E> for HashSet<E> {
 		let mut v: Vec<_> = self.iter().cloned().collect();
 		v.sort_unstable();
 		v.into_iter().map(|e| e.clone()..=e)
+	}
+}
+
+impl<E: Clone + PartialOrd, I, J> IntersectIter<E, I, J>
+where
+	I: Iterator<Item = RangeInclusive<E>>,
+	J: Iterator<Item = RangeInclusive<E>>,
+{
+	/// Create a new [`IntersectIter`] from two iterators yielding ordered ranges.
+	pub fn from_iters(lhs: I, rhs: J) -> Self {
+		Self {
+			lhs: lhs.peekable(),
+			rhs: rhs.peekable(),
+		}
+	}
+
+	/// Create a new [`IntersectIter`] from two set types that implement the [`IntervalIterator`] trait.
+	pub fn new<A, B>(lhs: &A, rhs: &B) -> Self
+	where
+		A: IntervalIterator<E, IntervalIter = I>,
+		B: IntervalIterator<E, IntervalIter = J>,
+	{
+		Self::from_iters(lhs.intervals(), rhs.intervals())
+	}
+}
+
+impl<E: PartialOrd + Clone, I, J> Iterator for IntersectIter<E, I, J>
+where
+	I: Iterator<Item = RangeInclusive<E>>,
+	J: Iterator<Item = RangeInclusive<E>>,
+{
+	type Item = RangeInclusive<E>;
+
+	fn next(&mut self) -> Option<Self::Item> {
+		while let (Some(l), Some(r)) = (self.lhs.peek(), self.rhs.peek()) {
+			match overlap(l, r) {
+				RangeOrdering::Less => {
+					let _ = self.lhs.next();
+				}
+				RangeOrdering::Greater => {
+					let _ = self.rhs.next();
+				}
+				RangeOrdering::Overlap => {
+					let v = max(l.start(), r.start()).clone()..=min(l.end(), r.end()).clone();
+					if l.end() <= r.end() {
+						let _ = self.lhs.next();
+					} else {
+						let _ = self.rhs.next();
+					}
+					return Some(v);
+				}
+			}
+		}
+		None
 	}
 }
 
@@ -562,6 +628,88 @@ impl<'a, E: PartialOrd> IntoIterator for &'a RangeList<E> {
 		self.ranges
 			.iter()
 			.map(|(start, end)| RangeInclusive::new(start, end))
+	}
+}
+
+impl<E: Clone + PartialOrd, I, J> UnionIter<E, I, J>
+where
+	I: Iterator<Item = RangeInclusive<E>>,
+	J: Iterator<Item = RangeInclusive<E>>,
+{
+	/// Create a new [`UnionIter`] from two iterators yielding ordered ranges.
+	pub fn from_iters(lhs: I, rhs: J) -> Self {
+		Self {
+			lhs: lhs.peekable(),
+			rhs: rhs.peekable(),
+		}
+	}
+
+	/// Create a new [`UnionIter`] from two set types that implement the [`IntervalIterator`] trait.
+	pub fn new<A, B>(lhs: &A, rhs: &B) -> Self
+	where
+		A: IntervalIterator<E, IntervalIter = I>,
+		B: IntervalIterator<E, IntervalIter = J>,
+	{
+		Self::from_iters(lhs.intervals(), rhs.intervals())
+	}
+}
+
+impl<E: PartialOrd + Clone, I, J> Iterator for UnionIter<E, I, J>
+where
+	I: Iterator<Item = RangeInclusive<E>>,
+	J: Iterator<Item = RangeInclusive<E>>,
+{
+	type Item = RangeInclusive<E>;
+
+	fn next(&mut self) -> Option<Self::Item> {
+		match (self.lhs.peek(), self.rhs.peek()) {
+			(Some(l), None) => {
+				let v = l.clone();
+				let _ = self.lhs.next();
+				Some(v)
+			}
+			(None, Some(r)) => {
+				let v = r.clone();
+				let _ = self.rhs.next();
+				Some(v)
+			}
+			(Some(l), Some(r)) => match overlap(l, r) {
+				RangeOrdering::Less => {
+					let v = l.clone();
+					let _ = self.lhs.next();
+					Some(v)
+				}
+				RangeOrdering::Greater => {
+					let v = r.clone();
+					let _ = self.rhs.next();
+					Some(v)
+				}
+				RangeOrdering::Overlap => {
+					let mut ext = min(l.start(), r.start()).clone()..=max(l.end(), r.end()).clone();
+					let _ = self.lhs.next();
+					let _ = self.rhs.next();
+					loop {
+						if let Some(l) = self.lhs.peek() {
+							if overlap(&ext, l) == RangeOrdering::Overlap {
+								ext = ext.start().clone()..=max(ext.end(), l.end()).clone();
+								let _ = self.lhs.next();
+								continue;
+							}
+						}
+						if let Some(r) = self.rhs.peek() {
+							if overlap(&ext, r) == RangeOrdering::Overlap {
+								ext = ext.start().clone()..=max(ext.end(), r.end()).clone();
+								let _ = self.rhs.next();
+								continue;
+							}
+						}
+						break;
+					}
+					Some(ext)
+				}
+			},
+			(None, None) => None,
+		}
 	}
 }
 
