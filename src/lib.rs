@@ -10,6 +10,7 @@
 //! any combination of types that implement it.
 
 use std::{
+	collections::{BTreeSet, HashSet},
 	fmt::{Debug, Display},
 	iter::Map,
 	ops::RangeInclusive,
@@ -46,11 +47,11 @@ enum RangeOrdering {
 }
 
 /// A trait that provides operations on iterators of orderdered intervals.
-pub trait IntervalIter<E: PartialOrd> {
+pub trait IntervalIterator<E: PartialOrd> {
 	/// The type of the interval iterator.
-	type Iter: Iterator<Item = RangeInclusive<E>>;
+	type IntervalIter: Iterator<Item = RangeInclusive<E>>;
 	/// Returns an iterator over the ordered intervals.
-	fn intervals(&self) -> Self::Iter;
+	fn intervals(&self) -> Self::IntervalIter;
 
 	/// Returns the number of elements contained within the RangeList.
 	fn card(&self) -> usize
@@ -76,7 +77,7 @@ pub trait IntervalIter<E: PartialOrd> {
 	fn diff<O, R>(&self, other: &O) -> R
 	where
 		E: Clone + Integer,
-		O: IntervalIter<E>,
+		O: IntervalIterator<E>,
 		R: FromIterator<RangeInclusive<E>>,
 	{
 		let next_higher = |x: &E| {
@@ -148,7 +149,7 @@ pub trait IntervalIter<E: PartialOrd> {
 	}
 
 	/// Returns whether `self` and `other` are disjoint sets
-	fn disjoint<O: IntervalIter<E> + ?Sized>(&self, other: &O) -> bool {
+	fn disjoint<O: IntervalIterator<E> + ?Sized>(&self, other: &O) -> bool {
 		let mut lhs = self.intervals().peekable();
 		let mut rhs = other.intervals().peekable();
 		while let (Some(l), Some(r)) = (lhs.peek(), rhs.peek()) {
@@ -171,7 +172,7 @@ pub trait IntervalIter<E: PartialOrd> {
 	fn intersect<O, R>(&self, other: &O) -> R
 	where
 		E: Clone,
-		O: IntervalIter<E>,
+		O: IntervalIterator<E>,
 		R: FromIterator<RangeInclusive<E>>,
 	{
 		let mut lhs = self.intervals().peekable();
@@ -199,7 +200,7 @@ pub trait IntervalIter<E: PartialOrd> {
 	}
 
 	/// Returns whether `self` is a subset of `other`
-	fn subset<O: IntervalIter<E> + ?Sized>(&self, other: &O) -> bool {
+	fn subset<O: IntervalIterator<E> + ?Sized>(&self, other: &O) -> bool {
 		let mut lhs = self.intervals().peekable();
 		let mut rhs = other.intervals().peekable();
 		while let (Some(l), Some(r)) = (lhs.peek(), rhs.peek()) {
@@ -223,7 +224,7 @@ pub trait IntervalIter<E: PartialOrd> {
 	}
 
 	/// Returns whether `self` is a superset of `other`
-	fn superset<O: IntervalIter<E> + ?Sized>(&self, other: &O) -> bool {
+	fn superset<O: IntervalIterator<E> + ?Sized>(&self, other: &O) -> bool {
 		other.subset(self)
 	}
 
@@ -231,7 +232,7 @@ pub trait IntervalIter<E: PartialOrd> {
 	fn union<O, R>(&self, other: &O) -> R
 	where
 		E: Clone,
-		O: IntervalIter<E>,
+		O: IntervalIterator<E>,
 		R: FromIterator<RangeInclusive<E>>,
 	{
 		let mut lhs = self.intervals().peekable();
@@ -314,6 +315,24 @@ fn overlap<E: PartialOrd>(r1: &RangeInclusive<E>, r2: &RangeInclusive<E>) -> Ran
 		RangeOrdering::Greater
 	} else {
 		RangeOrdering::Overlap
+	}
+}
+
+impl<E: Clone + Ord> IntervalIterator<E> for BTreeSet<E> {
+	type IntervalIter = Map<<BTreeSet<E> as IntoIterator>::IntoIter, fn(E) -> RangeInclusive<E>>;
+
+	fn intervals(&self) -> Self::IntervalIter {
+		self.clone().into_iter().map(|e| e.clone()..=e)
+	}
+}
+
+impl<E: Clone + Ord> IntervalIterator<E> for HashSet<E> {
+	type IntervalIter = Map<<Vec<E> as IntoIterator>::IntoIter, fn(E) -> RangeInclusive<E>>;
+
+	fn intervals(&self) -> Self::IntervalIter {
+		let mut v: Vec<_> = self.iter().cloned().collect();
+		v.sort_unstable();
+		v.into_iter().map(|e| e.clone()..=e)
 	}
 }
 
@@ -516,6 +535,14 @@ where
 	}
 }
 
+impl<E: PartialOrd + Clone> IntervalIterator<E> for RangeList<E> {
+	type IntervalIter = <RangeList<E> as IntoIterator>::IntoIter;
+
+	fn intervals(&self) -> Self::IntervalIter {
+		self.clone().into_iter()
+	}
+}
+
 impl<E: PartialOrd + Clone> IntoIterator for RangeList<E> {
 	type IntoIter = Map<std::vec::IntoIter<(E, E)>, fn((E, E)) -> RangeInclusive<E>>;
 	type Item = RangeInclusive<E>;
@@ -535,19 +562,6 @@ impl<'a, E: PartialOrd> IntoIterator for &'a RangeList<E> {
 		self.ranges
 			.iter()
 			.map(|(start, end)| RangeInclusive::new(start, end))
-	}
-}
-
-impl<E, I, S> IntervalIter<E> for S
-where
-	E: PartialOrd,
-	I: Into<RangeInclusive<E>>,
-	S: IntoIterator<Item = I> + Clone,
-{
-	type Iter = Map<<S as IntoIterator>::IntoIter, fn(I) -> RangeInclusive<E>>;
-
-	fn intervals(&self) -> Self::Iter {
-		self.clone().into_iter().map(Into::into)
 	}
 }
 
