@@ -4,10 +4,14 @@
 //! sets of values as a collection of inclusive ranges. The ranges are stored
 //! in a deduplicated sorted order.
 //!
-//! Additionally, the library provides a [`IntervalIter`] trait that can be
-//! implemented by types that can provide an iterator of sorted inclusive
-//! ranges. This trait then provides methods to perform set operations on
-//! any combination of types that implement it.
+//! Additionally, the library defines [`IntervalIterator`] trait to be
+//! implemented by types can provide an iterator of sorted inclusive
+//! ranges. Any combination of types that implement this trait can be used
+//! to perform standard set operations such as union and intersection.
+//!
+//! Finally, the library provides [`DiffIter`], [`IntersectIter`], and
+//! [`UnionIter`], which are lazy iterator combinators that can be used to
+//! perform set operations on two iterators of ordered ranges.
 
 use std::{
 	collections::{BTreeSet, HashSet},
