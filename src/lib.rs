@@ -478,7 +478,10 @@ impl<E: PartialOrd> RangeList<E> {
 
 impl<E: PartialOrd + Copy> RangeList<E> {
 	/// Returns an Copying iterator for the ranges in the set.
-	#[allow(clippy::type_complexity)]
+	#[allow(
+		clippy::type_complexity,
+		reason = "type is less understandable if split up"
+	)]
 	pub fn iter<'a>(
 		&'a self,
 	) -> Map<
