@@ -17,7 +17,7 @@ use std::{
 	collections::{BTreeSet, HashSet},
 	fmt::{Debug, Display},
 	iter::{Map, Peekable},
-	ops::RangeInclusive,
+	ops::{Bound, RangeInclusive},
 };
 
 use castaway::match_type;
@@ -82,7 +82,7 @@ pub trait IntervalIterator<E: PartialOrd> {
 	/// # Examples
 	///
 	/// ```
-	/// # use rangelist::RangeList;
+	/// # use rangelist::{RangeList, IntervalIterator};
 	/// assert!(RangeList::from_iter([1..=4]).contains(&4));
 	/// assert!(!RangeList::from_iter([1..=4]).contains(&0));
 	///
@@ -437,6 +437,152 @@ impl<E: PartialOrd> RangeList<E> {
 		self.ranges.is_empty()
 	}
 
+	/// Returns the [`Self::position`] pointing at the smallest element greater
+	/// than (or equal to) the given bound.
+	///
+	/// Passing `Bound::Included(x)` will return the position of the smallest
+	/// element greater than or equal to `x`, or `None` if all elements are
+	/// smaller than `x`.
+	///
+	/// Passing `Bound::Excluded(x)` will return the position of the smallest
+	/// element greater than `x`, or `None` if all elements are smaller than or
+	/// equal to `x`.
+	///
+	/// Passing `Bound::Unbounded` will return `None`.
+	///
+	/// # Examples
+	///
+	/// ```
+	/// # use rangelist::RangeList;
+	/// # use std::ops::Bound;
+	/// let rl = RangeList::from_iter([1..=4, 6..=8]);
+	/// assert_eq!(rl.first_position_bound(&Bound::Included(-1)), Some(0));
+	/// assert_eq!(rl.first_position_bound(&Bound::Included(1)), Some(0));
+	/// assert_eq!(rl.first_position_bound(&Bound::Excluded(1)), Some(1));
+	/// assert_eq!(rl.first_position_bound(&Bound::Included(4)), Some(3));
+	/// assert_eq!(rl.first_position_bound(&Bound::Excluded(4)), Some(4));
+	/// assert_eq!(rl.first_position_bound(&Bound::Included(8)), Some(6));
+	///
+	/// assert_eq!(rl.first_position_bound(&Bound::Included(9)), None);
+	/// ```
+	pub fn first_position_bound(&self, bound: &Bound<E>) -> Option<usize>
+	where
+		E: AsPrimitive<usize> + Integer,
+	{
+		let elem = match bound {
+			Bound::Included(x) => x,
+			Bound::Excluded(x) => x,
+			Bound::Unbounded => {
+				return None;
+			}
+		};
+		let mut pos = 0;
+		let card = self.card();
+		for (start, end) in &self.ranges {
+			if elem < start {
+				return Some(pos);
+			}
+			if elem <= end {
+				pos += (*elem - *start).as_();
+				if matches!(bound, Bound::Excluded(_)) {
+					pos += 1;
+					if pos > card {
+						return None;
+					}
+				}
+				debug_assert!(pos <= card);
+				return Some(pos);
+			}
+			pos += (*end - *start).as_() + 1;
+		}
+		debug_assert_eq!(pos, self.card());
+		None
+	}
+
+	/// Returns an Copying iterator for the ranges in the set.
+	#[allow(
+		clippy::type_complexity,
+		reason = "type is less understandable if split up"
+	)]
+	pub fn iter<'a>(
+		&'a self,
+	) -> Map<
+		<&'a RangeList<E> as IntoIterator>::IntoIter,
+		fn(RangeInclusive<&'a E>) -> RangeInclusive<E>,
+	>
+	where
+		E: Copy,
+	{
+		self.into_iter().map(|r| **r.start()..=**r.end())
+	}
+
+	/// Returns the [`Self::position`] pointing at the largest element smaller
+	/// than (or equal to) the given bound.
+	///
+	/// Passing `Bound::Included(x)` will return the position of the largest
+	/// element smaller than or equal to `x`, or `None` if all elements are larger
+	/// `x`.
+	///
+	/// Passing `Bound::Excluded(x)` will return the position of the largest
+	/// element smaller than `x`, or `None` if all elements are larger than or
+	/// equal to `x`.
+	///
+	/// Passing `Bound::Unbounded` will return `None`.
+	///
+	/// # Examples
+	///
+	/// ```
+	/// # use rangelist::RangeList;
+	/// # use std::ops::Bound;
+	/// let rl = RangeList::from_iter([1..=4, 6..=8]);
+	/// assert_eq!(rl.last_position_bound(&Bound::Included(1)), Some(0));
+	/// assert_eq!(rl.last_position_bound(&Bound::Included(4)), Some(3));
+	/// assert_eq!(rl.last_position_bound(&Bound::Excluded(4)), Some(2));
+	/// assert_eq!(rl.last_position_bound(&Bound::Included(9)), Some(7));
+	/// assert_eq!(rl.last_position_bound(&Bound::Excluded(9)), Some(7));
+	///
+	/// assert_eq!(rl.last_position_bound(&Bound::Included(-1)), None);
+	/// assert_eq!(rl.last_position_bound(&Bound::Excluded(1)), None);
+	/// ```
+	pub fn last_position_bound(&self, bound: &Bound<E>) -> Option<usize>
+	where
+		E: AsPrimitive<usize> + Integer,
+	{
+		let mut pos = self.card();
+		let lb = self.lower_bound()?;
+		let elem = match bound {
+			Bound::Included(x) => {
+				if x < lb {
+					return None;
+				}
+				x
+			}
+			Bound::Excluded(x) => {
+				if x <= lb {
+					return None;
+				}
+				x
+			}
+			Bound::Unbounded => {
+				return None;
+			}
+		};
+		for (start, end) in self.ranges.iter().rev() {
+			if elem > end {
+				return Some(pos);
+			}
+			if elem >= start {
+				pos -= (*end - *elem).as_() + 1;
+				if matches!(bound, Bound::Excluded(_)) {
+					pos -= 1;
+				}
+				return Some(pos);
+			}
+			pos -= (*end - *start).as_() + 1;
+		}
+		unreachable!()
+	}
+
 	/// Returns the lower bound of the range list, or `None` if the range list is
 	/// empty.
 	///
@@ -451,6 +597,37 @@ impl<E: PartialOrd> RangeList<E> {
 	/// ```
 	pub fn lower_bound(&self) -> Option<&E> {
 		self.ranges.first().map(|(start, _)| start)
+	}
+
+	/// Returns how many elements precede the given element in the RangeList, or
+	/// `None` if the element does not occur in the RangeList.
+	///
+	/// # Examples
+	///
+	/// ```
+	/// # use rangelist::RangeList;
+	/// let rl = RangeList::from_iter([1..=4, 6..=8]);
+	/// assert_eq!(rl.position(&1), Some(0));
+	/// assert_eq!(rl.position(&4), Some(3));
+	/// assert_eq!(rl.position(&6), Some(4));
+	/// assert_eq!(rl.position(&7), Some(5));
+	/// assert_eq!(rl.position(&-4), None);
+	/// ```
+	pub fn position(&self, elem: &E) -> Option<usize>
+	where
+		E: AsPrimitive<usize> + Integer,
+	{
+		let mut pos = 0;
+		for (start, end) in &self.ranges {
+			if elem < start {
+				return None;
+			}
+			if elem <= end {
+				return Some(pos + (*elem - *start).as_());
+			}
+			pos += (*end - *start).as_() + 1;
+		}
+		None
 	}
 
 	/// Returns the upper bound of the range list, or `None` if the range list is
@@ -471,23 +648,7 @@ impl<E: PartialOrd> RangeList<E> {
 	}
 }
 
-impl<E: PartialOrd + Copy> RangeList<E> {
-	/// Returns an Copying iterator for the ranges in the set.
-	#[allow(
-		clippy::type_complexity,
-		reason = "type is less understandable if split up"
-	)]
-	pub fn iter<'a>(
-		&'a self,
-	) -> Map<
-		<&RangeList<E> as IntoIterator>::IntoIter,
-		fn(RangeInclusive<&'a E>) -> RangeInclusive<E>,
-	> {
-		self.into_iter().map(|r| **r.start()..=**r.end())
-	}
-}
-
-impl<E: PartialOrd + Debug> Debug for RangeList<E> {
+impl<E: Debug + PartialOrd> Debug for RangeList<E> {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		if self.ranges.is_empty() {
 			return write!(f, "RangeList::default()");
@@ -512,7 +673,7 @@ impl<E: PartialOrd + Debug> Debug for RangeList<E> {
 	}
 }
 
-impl<E: PartialOrd + Debug> Display for RangeList<E> {
+impl<E: Debug + PartialOrd> Display for RangeList<E> {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		let mut first = true;
 		for r in &self.ranges {
@@ -529,7 +690,7 @@ impl<E: PartialOrd + Debug> Display for RangeList<E> {
 	}
 }
 
-impl<E: PartialOrd + Clone> From<&RangeInclusive<E>> for RangeList<E> {
+impl<E: Clone + PartialOrd> From<&RangeInclusive<E>> for RangeList<E> {
 	fn from(value: &RangeInclusive<E>) -> Self {
 		if value.is_empty() {
 			RangeList { ranges: Vec::new() }
@@ -541,7 +702,7 @@ impl<E: PartialOrd + Clone> From<&RangeInclusive<E>> for RangeList<E> {
 	}
 }
 
-impl<E: PartialOrd + Clone> From<RangeInclusive<E>> for RangeList<E> {
+impl<E: Clone + PartialOrd> From<RangeInclusive<E>> for RangeList<E> {
 	fn from(value: RangeInclusive<E>) -> Self {
 		(&value).into()
 	}

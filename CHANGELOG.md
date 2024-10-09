@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add `RangeList::position`, `RangeList::first_position_bound`, and
+  `RangeList::last_position_bound` methods to aid in searching for the position of
+  an element in a `RangeList`.
+
 ### Changed
 
 - `RangeList::contains` is now implemented as part of the `IntervalIterator` trait.
