@@ -77,6 +77,22 @@ pub trait IntervalIterator<E: PartialOrd> {
 			.sum()
 	}
 
+	/// Returns `true` if `elem` is contained in the range list.
+	///
+	/// # Examples
+	///
+	/// ```
+	/// # use rangelist::RangeList;
+	/// assert!(RangeList::from_iter([1..=4]).contains(&4));
+	/// assert!(!RangeList::from_iter([1..=4]).contains(&0));
+	///
+	/// assert!(RangeList::from_iter([1..=4, 6..=7, -5..=-3]).contains(&7));
+	/// assert!(!RangeList::from_iter([1..=4, 6..=7, -5..=-3]).contains(&0));
+	/// ```
+	fn contains(&self, elem: &E) -> bool {
+		self.intervals().any(|r| r.contains(elem))
+	}
+
 	/// Compute RangeList without any of the elements in the ranges of `other`.
 	///
 	/// # Warning
@@ -419,27 +435,6 @@ impl<E: PartialOrd> RangeList<E> {
 	/// ```
 	pub fn is_empty(&self) -> bool {
 		self.ranges.is_empty()
-	}
-
-	/// Returns `true` if `item` is contained in the range list.
-	///
-	/// # Examples
-	///
-	/// ```
-	/// # use rangelist::RangeList;
-	/// assert!(RangeList::from_iter([1..=4]).contains(&4));
-	/// assert!(!RangeList::from_iter([1..=4]).contains(&0));
-	///
-	/// assert!(RangeList::from_iter([1..=4, 6..=7, -5..=-3]).contains(&7));
-	/// assert!(!RangeList::from_iter([1..=4, 6..=7, -5..=-3]).contains(&0));
-	/// ```
-	pub fn contains(&self, item: &E) -> bool {
-		for r in self {
-			if r.contains(&item) {
-				return true;
-			}
-		}
-		false
 	}
 
 	/// Returns the lower bound of the range list, or `None` if the range list is
