@@ -12,10 +12,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add `RangeList::position`, `RangeList::first_position_bound`, and
   `RangeList::last_position_bound` methods to aid in searching for the position of
   an element in a `RangeList`.
+- Add `DiscreteElement` trait to be able to treat certain elements as distinct
+  and enumerable, such as for example integers. This replaces the need for the
+  `castaway` and `num` dependencies.
 
 ### Changed
 
 - `RangeList::contains` is now implemented as part of the `IntervalIterator` trait.
+- `RangeList::card` now returns an `Option<usize>` and is marked `None` when the
+  cardinality overflows `usize`.
 
 ## [0.2.0] - 2023-08-12
 
