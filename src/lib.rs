@@ -14,14 +14,12 @@
 //! perform set operations on two iterators of ordered ranges.
 
 use std::{
+	any::Any,
 	collections::{BTreeSet, HashSet},
 	fmt::{Debug, Display},
 	iter::{Map, Peekable},
 	ops::{Bound, RangeInclusive},
 };
-
-use castaway::match_type;
-use num::{cast::AsPrimitive, Integer};
 
 /// An iterator combinator that given two iterators yielding ordered ranges,
 /// yields the ordered ranges of elements that are in the ranges yielded by
@@ -29,7 +27,7 @@ use num::{cast::AsPrimitive, Integer};
 /// by the `rhs` iterator.
 #[derive(Debug)]
 pub struct DiffIter<
-	E: Clone + Integer,
+	E: Clone + DiscreteElement + PartialOrd,
 	I: Iterator<Item = RangeInclusive<E>>,
 	J: Iterator<Item = RangeInclusive<E>>,
 > {
@@ -37,8 +35,38 @@ pub struct DiffIter<
 	lhs: Peekable<I>,
 	/// Iterator yielding the ranges of the elements to be excluded
 	rhs: Peekable<J>,
-	/// The maximum of the last range yielded
-	max: E,
+	/// Current LHS range being cut
+	cur_lhs: Option<(E, E)>,
+}
+
+/// Trait implemented for type that should be considered discrete elements when
+/// part of a [`RangeList`].
+///
+// Note that the methods in this trait are inspired by the `Step` trait and can
+// be replaced when this is merged into stable Rust.
+pub trait DiscreteElement: Sized {
+	/// Returns the number of *elements* between `start` to `end` (inclusive).
+	///
+	/// Returns `None` if the number of steps would overflow `usize`, or cannot be
+	/// determined.
+	///
+	/// # Invariants
+	///
+	/// For any `a`, `b`, and `n`:
+	///
+	/// - `elem_between(&a, &b) == Some(n)` only if `a <= b`
+	/// - `elem_between(&a, &b) == Some(0)` if and only if `a == b`
+	/// - `elem_between(&a, &b) == None` if `a > b`
+	fn elem_between(start: &Self, end: &Self) -> Option<usize>;
+
+	/// Returns the element that would be considered by the *successor* of `self`,
+	/// or `None` if it should be considered the largest possible element.
+	fn successor(&self) -> Option<Self>;
+
+	/// Returns the element that would be considered by the *predecessor* of
+	/// `self`, or `None` if it should be considered the smallest possible
+	/// element.
+	fn predecessor(&self) -> Option<Self>;
 }
 
 /// An iterator combinator that given two iterators yielding ordered ranges,
@@ -64,17 +92,20 @@ pub trait IntervalIterator<E: PartialOrd> {
 	fn intervals(&self) -> Self::IntervalIter;
 
 	/// Returns the number of elements contained within the RangeList.
-	fn card(&self) -> usize
+	///
+	/// Returns `None` if the number of steps would overflow `usize`.
+	fn card(&self) -> Option<usize>
 	where
-		E: AsPrimitive<usize> + Integer,
+		E: DiscreteElement,
 	{
-		self.intervals()
-			.map(|r| {
-				let mut diff = *r.end() - *r.start();
-				diff.inc();
-				diff.as_()
-			})
-			.sum()
+		let mut card = 0;
+		for r in self.intervals() {
+			match DiscreteElement::elem_between(r.start(), r.end()) {
+				Some(c) => card += c,
+				None => return None,
+			}
+		}
+		Some(card)
 	}
 
 	/// Returns `true` if `elem` is contained in the range list.
@@ -102,7 +133,7 @@ pub trait IntervalIterator<E: PartialOrd> {
 	/// overflow in `E`.
 	fn diff<O, R>(&self, other: &O) -> R
 	where
-		E: Clone + Integer,
+		E: Clone + DiscreteElement,
 		O: IntervalIterator<E>,
 		R: FromIterator<RangeInclusive<E>>,
 	{
@@ -190,7 +221,7 @@ pub trait IntervalIterator<E: PartialOrd> {
 /// boundary values cannot be sorted. This requirement allows the usage of types
 /// like [`f64`], as long as the user can guarantee that values that cannot be
 /// ordered, like `NaN`, will not appear.
-#[derive(Default, Clone, PartialEq, Eq, Hash, PartialOrd)]
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd)]
 pub struct RangeList<E: PartialOrd> {
 	/// Memory representation of the ranges
 	ranges: Vec<(E, E)>,
@@ -258,20 +289,16 @@ impl<E: Clone + Ord> IntervalIterator<E> for BTreeSet<E> {
 	}
 }
 
-impl<E: Clone + Integer, I, J> DiffIter<E, I, J>
+impl<E: Clone + DiscreteElement + PartialOrd, I, J> DiffIter<E, I, J>
 where
 	I: Iterator<Item = RangeInclusive<E>>,
 	J: Iterator<Item = RangeInclusive<E>>,
 {
 	/// Create a new [`DiffIter`] from two iterators yielding ordered ranges.
 	pub fn from_iters(lhs: I, rhs: J) -> Self {
-		let mut lhs = lhs.peekable();
 		Self {
-			max: lhs
-				.peek()
-				.map(|r| Self::next_lower(r.start()))
-				.unwrap_or_else(E::zero),
-			lhs,
+			cur_lhs: None,
+			lhs: lhs.peekable(),
 			rhs: rhs.peekable(),
 		}
 	}
@@ -284,23 +311,9 @@ where
 	{
 		Self::from_iters(lhs.intervals(), rhs.intervals())
 	}
-
-	/// Returns the next higher value of `x`
-	fn next_higher(x: &E) -> E {
-		let mut v = x.clone();
-		v.inc();
-		v
-	}
-
-	/// Returns the next lower value of `x`
-	fn next_lower(x: &E) -> E {
-		let mut v = x.clone();
-		v.dec();
-		v
-	}
 }
 
-impl<E: Clone + Integer, I, J> Iterator for DiffIter<E, I, J>
+impl<E: Clone + DiscreteElement + PartialOrd, I, J> Iterator for DiffIter<E, I, J>
 where
 	I: Iterator<Item = RangeInclusive<E>>,
 	J: Iterator<Item = RangeInclusive<E>>,
@@ -309,51 +322,43 @@ where
 
 	fn next(&mut self) -> Option<Self::Item> {
 		loop {
-			// If LHS is empty, return None
-			let _ = self.lhs.peek()?;
-
-			let mut min = Self::next_higher(&self.max);
-			self.max = self.lhs.peek().unwrap().end().clone();
-			if min > *self.lhs.peek().unwrap().end() {
-				let _ = self.lhs.next();
-				if let Some(r) = self.lhs.peek() {
-					min = r.start().clone();
-					self.max = r.end().clone();
-				} else {
-					return None;
-				}
-			}
-			while let Some(r) = self.rhs.peek() {
-				if r.end() < self.lhs.peek().unwrap().start() {
+			// Grab current LHS range or the next one if no current
+			let lhs = self.cur_lhs.take().or_else(|| {
+				self.lhs
+					.next()
+					.map(|r| (r.start().clone(), r.end().clone()))
+			})?;
+			// Forward over any RHS ranges that cover elements before the current LHS
+			// range.
+			while let Some(rhs) = self.rhs.peek() {
+				if *rhs.end() < lhs.0 {
 					let _ = self.rhs.next();
-				} else {
-					break;
+					continue;
 				}
+				break;
 			}
-			if let Some(r) = self.rhs.peek() {
-				if *r.start() <= self.max {
-					// Interval min..max must be shurk
-					if min >= *r.start() && self.max <= *r.end() {
-						// Interval min..max is completely covered by r
-						continue;
-					}
-					if *r.start() <= min {
-						// Interval min..max overlaps on the left
-						min = Self::next_higher(r.end());
-						// Search for max
-						let _ = self.rhs.next();
-						if let Some(r) = self.rhs.peek() {
-							if *r.start() <= self.max {
-								self.max = Self::next_lower(r.start());
-							}
-						}
-					} else {
-						// Interval overlaps on the right
-						self.max = Self::next_lower(r.start());
-					}
+			if let Some(rhs) = self.rhs.peek() {
+				// If the RHS range does not overlap with the LHS range, just yield the
+				// LHS range.
+				if lhs.1 < *rhs.start() {
+					return Some(lhs.0..=lhs.1);
 				}
+				// If the current LHS is completely covered by the RHS range, then
+				// continue to the next LHS range.
+				if *rhs.start() <= lhs.0 && lhs.1 <= *rhs.end() {
+					continue;
+				}
+				// Otherwise, cut the LHS range and yield it.
+				let rhs = self.rhs.next().unwrap();
+				let result = lhs.0..=rhs.start().predecessor().unwrap();
+				// If there are remaining elements in the LHS range, store it for the next
+				// round.
+				if *rhs.end() < lhs.1 {
+					self.cur_lhs = Some((rhs.end().successor().unwrap(), lhs.1));
+				}
+				return Some(result);
 			}
-			return Some(min..=self.max.clone());
+			return Some(lhs.0..=lhs.1);
 		}
 	}
 }
@@ -423,6 +428,60 @@ where
 }
 
 impl<E: PartialOrd> RangeList<E> {
+	/// Internal method used to construct a [`RangeList`] from an iterator of
+	/// pairs that is known to be sorted order, but where ranges might still need
+	/// to be merged.
+	fn from_sorted_iter<T: IntoIterator<Item = (E, E)>>(iter: T) -> Self
+	where
+		E: Any + Clone,
+	{
+		let mut it = iter.into_iter();
+		let mut ranges = Vec::new();
+		let Some(mut cur) = it.next() else {
+			return Self::default();
+		};
+		for next in it {
+			// Determine distance between the two ranges if the elements are discrete.
+			let inbetween: &dyn Any = &(cur.1.clone(), next.0.clone());
+			let dist = if let Some((ub, lb)) = inbetween.downcast_ref::<(isize, _)>() {
+				DiscreteElement::elem_between(ub, lb)
+			} else if let Some((ub, lb)) = inbetween.downcast_ref::<(i128, _)>() {
+				DiscreteElement::elem_between(ub, lb)
+			} else if let Some((ub, lb)) = inbetween.downcast_ref::<(i64, _)>() {
+				DiscreteElement::elem_between(ub, lb)
+			} else if let Some((ub, lb)) = inbetween.downcast_ref::<(i32, _)>() {
+				DiscreteElement::elem_between(ub, lb)
+			} else if let Some((ub, lb)) = inbetween.downcast_ref::<(i16, _)>() {
+				DiscreteElement::elem_between(ub, lb)
+			} else if let Some((ub, lb)) = inbetween.downcast_ref::<(i8, _)>() {
+				DiscreteElement::elem_between(ub, lb)
+			} else if let Some((ub, lb)) = inbetween.downcast_ref::<(usize, _)>() {
+				DiscreteElement::elem_between(ub, lb)
+			} else if let Some((ub, lb)) = inbetween.downcast_ref::<(u128, _)>() {
+				DiscreteElement::elem_between(ub, lb)
+			} else if let Some((ub, lb)) = inbetween.downcast_ref::<(u64, _)>() {
+				DiscreteElement::elem_between(ub, lb)
+			} else if let Some((ub, lb)) = inbetween.downcast_ref::<(u32, _)>() {
+				DiscreteElement::elem_between(ub, lb)
+			} else if let Some((ub, lb)) = inbetween.downcast_ref::<(u16, _)>() {
+				DiscreteElement::elem_between(ub, lb)
+			} else if let Some((ub, lb)) = inbetween.downcast_ref::<(u8, _)>() {
+				DiscreteElement::elem_between(ub, lb)
+			} else {
+				None
+			};
+
+			if cur.1 >= next.0 || dist.unwrap_or(usize::MAX) <= 2 {
+				cur.1 = next.1
+			} else {
+				ranges.push(cur);
+				cur = next;
+			}
+		}
+		ranges.push(cur);
+		Self { ranges }
+	}
+
 	/// Returns `true` if the range list contains no items.
 	///
 	/// # Examples
@@ -467,7 +526,7 @@ impl<E: PartialOrd> RangeList<E> {
 	/// ```
 	pub fn first_position_bound(&self, bound: &Bound<E>) -> Option<usize>
 	where
-		E: AsPrimitive<usize> + Integer,
+		E: Clone + DiscreteElement,
 	{
 		let elem = match bound {
 			Bound::Included(x) => x,
@@ -477,25 +536,24 @@ impl<E: PartialOrd> RangeList<E> {
 			}
 		};
 		let mut pos = 0;
-		let card = self.card();
+		let card = self.card()?;
 		for (start, end) in &self.ranges {
 			if elem < start {
 				return Some(pos);
 			}
 			if elem <= end {
-				pos += (*elem - *start).as_();
-				if matches!(bound, Bound::Excluded(_)) {
-					pos += 1;
-					if pos > card {
-						return None;
-					}
+				pos += DiscreteElement::elem_between(start, elem)?;
+				match bound {
+					Bound::Included(_) => pos -= 1,
+					Bound::Excluded(_) if pos > card => return None,
+					_ => {}
 				}
 				debug_assert!(pos <= card);
 				return Some(pos);
 			}
-			pos += (*end - *start).as_() + 1;
+			pos += DiscreteElement::elem_between(start, end)?;
 		}
-		debug_assert_eq!(pos, self.card());
+		debug_assert_eq!(pos, self.card().unwrap());
 		None
 	}
 
@@ -546,9 +604,9 @@ impl<E: PartialOrd> RangeList<E> {
 	/// ```
 	pub fn last_position_bound(&self, bound: &Bound<E>) -> Option<usize>
 	where
-		E: AsPrimitive<usize> + Integer,
+		E: Clone + DiscreteElement,
 	{
-		let mut pos = self.card();
+		let mut pos = self.card()?;
 		let lb = self.lower_bound()?;
 		let elem = match bound {
 			Bound::Included(x) => {
@@ -572,13 +630,13 @@ impl<E: PartialOrd> RangeList<E> {
 				return Some(pos);
 			}
 			if elem >= start {
-				pos -= (*end - *elem).as_() + 1;
+				pos -= DiscreteElement::elem_between(elem, end)?;
 				if matches!(bound, Bound::Excluded(_)) {
 					pos -= 1;
 				}
 				return Some(pos);
 			}
-			pos -= (*end - *start).as_() + 1;
+			pos -= DiscreteElement::elem_between(start, end)?;
 		}
 		unreachable!()
 	}
@@ -615,7 +673,7 @@ impl<E: PartialOrd> RangeList<E> {
 	/// ```
 	pub fn position(&self, elem: &E) -> Option<usize>
 	where
-		E: AsPrimitive<usize> + Integer,
+		E: DiscreteElement,
 	{
 		let mut pos = 0;
 		for (start, end) in &self.ranges {
@@ -623,9 +681,10 @@ impl<E: PartialOrd> RangeList<E> {
 				return None;
 			}
 			if elem <= end {
-				return Some(pos + (*elem - *start).as_());
+				let elems = DiscreteElement::elem_between(start, elem)?;
+				return Some(pos + elems - 1);
 			}
-			pos += (*end - *start).as_() + 1;
+			pos += DiscreteElement::elem_between(start, end)?;
 		}
 		None
 	}
@@ -673,6 +732,14 @@ impl<E: Debug + PartialOrd> Debug for RangeList<E> {
 	}
 }
 
+impl<E: PartialOrd> Default for RangeList<E> {
+	fn default() -> Self {
+		Self {
+			ranges: Default::default(),
+		}
+	}
+}
+
 impl<E: Debug + PartialOrd> Display for RangeList<E> {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		let mut first = true;
@@ -710,7 +777,7 @@ impl<E: Clone + PartialOrd> From<RangeInclusive<E>> for RangeList<E> {
 
 impl<E, R> FromIterator<R> for RangeList<E>
 where
-	E: PartialOrd + Clone,
+	E: Any + Clone + PartialOrd,
 	R: Into<RangeInclusive<E>>,
 {
 	fn from_iter<T: IntoIterator<Item = R>>(iter: T) -> Self {
@@ -725,42 +792,11 @@ where
 				}
 			})
 			.collect();
-		if non_empty.is_empty() {
-			return RangeList { ranges: Vec::new() };
-		}
 		non_empty.sort_by(|a, b| {
 			a.0.partial_cmp(&b.0)
 				.expect("the order of the bounds in the RangeList cannot be partial")
 		});
-		let mut it = non_empty.into_iter();
-		let mut ranges = Vec::new();
-		let mut cur = it.next().unwrap();
-		for next in it {
-			// Determine distance between the two ranges if integral
-			let dist = match_type!((cur.1.clone(),next.0.clone()),
-			{
-				(i128,i128) as (ub, lb) => (lb - ub) as usize,
-				(i64,i64) as (ub, lb) => (lb - ub) as usize,
-				(i32,i32) as (ub, lb) => (lb - ub) as usize,
-				(i16,i16) as (ub, lb) => (lb - ub) as usize,
-				(i8,i8) as (ub, lb) => (lb - ub) as usize,
-				(u128,u128) as (ub, lb) => (lb - ub) as usize,
-				(u64,u64) as (ub, lb) => (lb - ub) as usize,
-				(u32,u32) as (ub, lb) => (lb - ub) as usize,
-				(u16,u16) as (ub, lb) => (lb - ub) as usize,
-				(u8,u8) as (ub, lb) => (lb - ub) as usize,
-				_ => usize::MAX,
-			});
-
-			if cur.1 >= next.0 || dist <= 1 {
-				cur.1 = next.1
-			} else {
-				ranges.push(cur);
-				cur = next;
-			}
-		}
-		ranges.push(cur);
-		Self { ranges }
+		Self::from_sorted_iter(non_empty)
 	}
 }
 
@@ -815,6 +851,136 @@ where
 	{
 		Self::from_iters(lhs.intervals(), rhs.intervals())
 	}
+}
+
+/// Macro to help with the implementation of [`DiscreteElements`] for the
+/// integer types in the standard library.
+macro_rules! discrete_elems_impls {
+	{
+		narrower than or same width as usize:
+			$( [ $u_narrower:ident $i_narrower:ident ] ),+;
+		wider than usize:
+			$( [ $u_wider:ident $i_wider:ident ] ),+;
+	} => {
+		$(
+			impl DiscreteElement for $u_narrower {
+				#[inline]
+				fn elem_between(start: &Self, end: &Self) -> Option<usize> {
+					if *start <= *end {
+						// This relies on $u_narrower <= usize
+						#[allow(trivial_numeric_casts, reason = "macro is used for many integer types including usize")]
+						let steps = (*end - *start) as usize;
+						steps.checked_add(1)
+					} else {
+						None
+					}
+				}
+
+				#[inline]
+				fn successor(&self) -> Option<Self> {
+					self.checked_add(1)
+				}
+
+				#[inline]
+				fn predecessor(&self) -> Option<Self> {
+					self.checked_sub(1)
+				}
+			}
+
+			impl DiscreteElement for $i_narrower {
+				#[inline]
+				fn elem_between(start: &Self, end: &Self) -> Option<usize> {
+					if *start <= *end {
+						#[allow(trivial_numeric_casts, reason = "macro is used for many integer types including isize")]
+						let steps = (*end as isize).wrapping_sub(*start as isize) as usize;
+						steps.checked_add(1)
+					} else {
+						None
+					}
+				}
+
+				#[inline]
+				fn successor(&self) -> Option<Self> {
+					self.checked_add(1)
+				}
+
+				#[inline]
+				fn predecessor(&self) -> Option<Self> {
+					self.checked_sub(1)
+				}
+			}
+		)+
+
+		$(
+			impl DiscreteElement for $u_wider {
+				#[inline]
+				fn elem_between(start: &Self, end: &Self) -> Option<usize> {
+					if *start <= *end {
+						if let Ok(steps) = usize::try_from(*end - *start) {
+							steps.checked_add(1)
+						} else {
+							None
+						}
+					} else {
+						None
+					}
+				}
+
+				#[inline]
+				fn successor(&self) -> Option<Self> {
+					self.checked_add(1)
+				}
+
+				#[inline]
+				fn predecessor(&self) -> Option<Self> {
+					self.checked_sub(1)
+				}
+			}
+
+			impl DiscreteElement for $i_wider {
+				#[inline]
+				fn elem_between(start: &Self, end: &Self) -> Option<usize> {
+					if *start <= *end {
+						if let Ok(steps) = usize::try_from(end.checked_sub(*start)?) {
+							steps.checked_add(1)
+						} else {
+							None
+						}
+					} else {
+						None
+					}
+				}
+
+				#[inline]
+				fn successor(&self) -> Option<Self> {
+					self.checked_add(1)
+				}
+
+				#[inline]
+				fn predecessor(&self) -> Option<Self> {
+					self.checked_sub(1)
+				}
+			}
+		)+
+	};
+}
+
+#[cfg(target_pointer_width = "64")]
+discrete_elems_impls! {
+	narrower than or same width as usize: [u8 i8], [u16 i16], [u32 i32], [u64 i64], [usize isize];
+	wider than usize: [u128 i128];
+}
+
+#[cfg(target_pointer_width = "32")]
+discrete_elems_impls! {
+	narrower than or same width as usize: [u8 i8], [u16 i16], [u32 i32], [usize isize];
+	wider than usize: [u64 i64], [u128 i128];
+}
+
+#[cfg(target_pointer_width = "16")]
+discrete_elems_impls! {
+	narrower than or same width as usize: [u8 i8], [u16 i16], [usize isize];
+	wider than usize: [u32 i32], [u64 i64], [u128 i128];
 }
 
 impl<E: PartialOrd + Clone, I, J> Iterator for UnionIter<E, I, J>
@@ -886,14 +1052,14 @@ mod tests {
 	fn test_rangelist() {
 		let empty: RangeList<i64> = RangeList::default();
 		expect![[r#"
-    RangeList::default()
+		RangeList::default()
 "#]]
 		.assert_debug_eq(&empty);
 		assert!(empty.is_empty());
 
 		let single_range = RangeList::from_iter([1..=4]);
 		expect![[r#"
-    RangeList::from(1..=4)
+		RangeList::from(1..=4)
 "#]]
 		.assert_debug_eq(&single_range);
 		assert!(!single_range.is_empty());
@@ -905,7 +1071,7 @@ mod tests {
 
 		let multi_range = RangeList::from_iter([1..=4, 6..=7, -5..=-3]);
 		expect![[r#"
-    RangeList::from_iter([-5..=-3, 1..=4, 6..=7])
+		RangeList::from_iter([-5..=-3, 1..=4, 6..=7])
 "#]]
 		.assert_debug_eq(&multi_range);
 		assert!(multi_range.contains(&-5));
@@ -921,13 +1087,13 @@ mod tests {
 
 		let collapse_range = RangeList::from_iter([1..=2, 2..=3, 10..=12, 11..=15]);
 		expect![[r#"
-    RangeList::from_iter([1..=3, 10..=15])
+		RangeList::from_iter([1..=3, 10..=15])
 "#]]
 		.assert_debug_eq(&collapse_range);
 
 		let float_range = RangeList::from_iter([0.1..=3.2, 8.1..=11.2, 10.0..=50.0]);
 		expect![[r#"
-    RangeList::from_iter([0.1..=3.2, 8.1..=50.0])
+		RangeList::from_iter([0.1..=3.2, 8.1..=50.0])
 "#]]
 		.assert_debug_eq(&float_range);
 	}
@@ -950,8 +1116,7 @@ mod tests {
 	#[test]
 	fn test_set_diff() {
 		let empty: RangeList<i64> = RangeList::default();
-		// TODO: Can we change the diff implementation so we don't need the additional space.
-		let inf: RangeList<i64> = RangeList::from_iter([i64::MIN + 1..=i64::MAX - 1]);
+		let inf: RangeList<i64> = RangeList::from_iter([i64::MIN..=i64::MAX]);
 		let res: RangeList<_> = empty.diff(&empty);
 		assert_eq!(res, empty);
 		let res: RangeList<_> = inf.diff(&inf);
@@ -1117,12 +1282,15 @@ mod tests {
 	#[test]
 	fn test_set_card() {
 		let empty = RangeList::<i64>::default();
-		assert_eq!(empty.card(), 0);
+		assert_eq!(empty.card(), Some(0));
+
+		let full: RangeList<i64> = (i64::MIN..=i64::MAX).into();
+		assert_eq!(full.card(), None);
 
 		let x = RangeList::<i8>::from(1..=5);
-		assert_eq!(x.card(), 5);
+		assert_eq!(x.card(), Some(5));
 
 		let y = RangeList::<u32>::from_iter([1..=2, 4..=6, 8..=9]);
-		assert_eq!(y.card(), 7);
+		assert_eq!(y.card(), Some(7));
 	}
 }
