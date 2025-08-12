@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] - 2025-08-12
 
 ### Added
 
@@ -46,6 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add `IntervalIter` trait for types that can output a iterator of sorted intervals and implement it for `RangeList`.
 - Add set operations `card`, `disjoint`, `intersect`, `subset`, `superset`, `union` for implementers of `IntervalIter`.
 
-[unreleased]: https://github.com/shackle-rs/shackle/releases/compare/rangelist-v0.2.0......HEAD
+[unreleased]: https://github.com/shackle-rs/shackle/releases/compare/rangelist-v0.3.0......HEAD
+[0.3.0]: https://github.com/shackle-rs/shackle/releases/compare/rangelist-v0.2.0...rangelist-v0.3.0
 [0.2.0]: https://github.com/shackle-rs/shackle/releases/compare/rangelist-v0.1.0...rangelist-v0.2.0
 [0.1.0]: https://github.com/shackle-rs/shackle/releases/tag/rangelist-v0.1.0
