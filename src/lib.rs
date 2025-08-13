@@ -143,12 +143,13 @@ pub struct DiffIter<
 	I: Iterator<Item = RangeInclusive<E>>,
 	J: Iterator<Item = RangeInclusive<E>>,
 > {
-	/// Iterator yielding the ranges of the elements to be included
+	/// Iterator yielding the ranges of the elements that we want to include.
 	lhs: Peekable<I>,
-	/// Iterator yielding the ranges of the elements to be excluded
+	/// Iterator yielding the ranges of the elements that must be excluded.
 	rhs: Peekable<J>,
-	/// Current LHS range being cut
-	cur_lhs: Option<(E, E)>,
+	/// Value to use as the start of the next LHS range, because it was already
+	/// partially yielded.
+	next_min: Option<E>,
 }
 
 /// Trait implemented for type that should be considered discrete elements when
@@ -409,7 +410,7 @@ where
 	/// Create a new [`DiffIter`] from two iterators yielding ordered ranges.
 	pub fn from_iters(lhs: I, rhs: J) -> Self {
 		Self {
-			cur_lhs: None,
+			next_min: None,
 			lhs: lhs.peekable(),
 			rhs: rhs.peekable(),
 		}
@@ -433,44 +434,57 @@ where
 	type Item = RangeInclusive<E>;
 
 	fn next(&mut self) -> Option<Self::Item> {
+		let mut lhs = self.lhs.peek()?.clone();
+		if let Some(min) = self.next_min.take() {
+			lhs = min..=lhs.end().clone();
+		}
 		loop {
-			// Grab current LHS range or the next one if no current
-			let lhs = self.cur_lhs.take().or_else(|| {
-				self.lhs
-					.next()
-					.map(|r| (r.start().clone(), r.end().clone()))
-			})?;
-			// Forward over any RHS ranges that cover elements before the current LHS
-			// range.
-			while let Some(rhs) = self.rhs.peek() {
-				if *rhs.end() < lhs.0 {
+			let Some(rhs) = self.rhs.peek() else {
+				let _ = self.lhs.next().unwrap();
+				return Some(lhs);
+			};
+			match overlap(&lhs, rhs) {
+				// LHS range is strictly smaller than RHS range. Keep RHS range and
+				// yield the LHS range.
+				RangeOrdering::Less => {
+					let _ = self.lhs.next().unwrap();
+					return Some(lhs);
+				}
+				RangeOrdering::Overlap => {
+					match (rhs.start() <= lhs.start(), rhs.end() >= lhs.end()) {
+						// RHS fully removes the LHS range, proceed to the next LHS range
+						(true, true) => {
+							let _ = self.lhs.next().unwrap();
+							lhs = self.lhs.peek()?.clone();
+						}
+						// RHS removes the beginning of the LHS range, cut LHS and proceed
+						// to the next RHS range.
+						(true, false) => {
+							lhs = rhs.end().successor().unwrap()..=lhs.end().clone();
+							let _ = self.rhs.next();
+						}
+						// RHS removes the end of the LHS range, emit cut LHS (and keep the
+						// RHS range).
+						(false, true) => {
+							let _ = self.lhs.next().unwrap();
+							return Some(lhs.start().clone()..=rhs.start().predecessor().unwrap());
+						}
+						// RHS removes a middle part of the LHS, emit cut LHS, keep its
+						// remainder, and proceed to the next RHS range.
+						(false, false) => {
+							let lhs_cut = lhs.start().clone()..=rhs.start().predecessor().unwrap();
+							self.next_min = Some(rhs.end().successor().unwrap());
+							let _ = self.rhs.next();
+							return Some(lhs_cut);
+						}
+					}
+				}
+				// LHS range is strictly greater than the RHS range, proceed to the next
+				// RHS range
+				RangeOrdering::Greater => {
 					let _ = self.rhs.next();
-					continue;
 				}
-				break;
 			}
-			if let Some(rhs) = self.rhs.peek() {
-				// If the RHS range does not overlap with the LHS range, just yield the
-				// LHS range.
-				if lhs.1 < *rhs.start() {
-					return Some(lhs.0..=lhs.1);
-				}
-				// If the current LHS is completely covered by the RHS range, then
-				// continue to the next LHS range.
-				if *rhs.start() <= lhs.0 && lhs.1 <= *rhs.end() {
-					continue;
-				}
-				// Otherwise, cut the LHS range and yield it.
-				let rhs = self.rhs.next().unwrap();
-				let result = lhs.0..=rhs.start().predecessor().unwrap();
-				// If there are remaining elements in the LHS range, store it for the next
-				// round.
-				if *rhs.end() < lhs.1 {
-					self.cur_lhs = Some((rhs.end().successor().unwrap(), lhs.1));
-				}
-				return Some(result);
-			}
-			return Some(lhs.0..=lhs.1);
 		}
 	}
 }
@@ -1165,6 +1179,11 @@ mod tests {
 		expect!["9..11"].assert_eq(&z.to_string());
 		let z: RangeList<_> = x.diff(&RangeList::from_iter([4..=4, 8..=8]));
 		assert_eq!(x, z);
+
+		// Regression test: z would previously contain 14.
+		let x = RangeList::from_iter([3..=4, 6..=9, 11..=12, 14..=14, 16..=16]);
+		let z: RangeList<_> = x.diff(&RangeList::from_iter([1..=1, 3..=3, 12..=14]));
+		expect!["4..4 union 6..9 union 11..11 union 16..16"].assert_eq(&z.to_string());
 	}
 
 	#[test]
