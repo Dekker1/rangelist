@@ -13,6 +13,118 @@
 //! [`UnionIter`], which are lazy iterator combinators that can be used to
 //! perform set operations on two iterators of ordered ranges.
 
+/// Macro to help with the implementation of [`DiscreteElements`] for the
+/// integer types in the standard library.
+macro_rules! discrete_elems_impls {
+	{
+		narrower than or same width as usize:
+			$( [ $u_narrower:ident $i_narrower:ident ] ),+;
+		wider than usize:
+			$( [ $u_wider:ident $i_wider:ident ] ),+;
+	} => {
+		$(
+			impl DiscreteElement for $u_narrower {
+				#[inline]
+				fn elem_between(start: &Self, end: &Self) -> Option<usize> {
+					if *start <= *end {
+						// This relies on $u_narrower <= usize
+						#[allow(trivial_numeric_casts, reason = "macro is used for many integer types including usize")]
+						let steps = (*end - *start) as usize;
+						steps.checked_add(1)
+					} else {
+						None
+					}
+				}
+
+				#[inline]
+				fn successor(&self) -> Option<Self> {
+					self.checked_add(1)
+				}
+
+				#[inline]
+				fn predecessor(&self) -> Option<Self> {
+					self.checked_sub(1)
+				}
+			}
+
+			impl DiscreteElement for $i_narrower {
+				#[inline]
+				fn elem_between(start: &Self, end: &Self) -> Option<usize> {
+					if *start <= *end {
+						#[allow(trivial_numeric_casts, reason = "macro is used for many integer types including isize")]
+						let steps = (*end as isize).wrapping_sub(*start as isize) as usize;
+						steps.checked_add(1)
+					} else {
+						None
+					}
+				}
+
+				#[inline]
+				fn successor(&self) -> Option<Self> {
+					self.checked_add(1)
+				}
+
+				#[inline]
+				fn predecessor(&self) -> Option<Self> {
+					self.checked_sub(1)
+				}
+			}
+		)+
+
+		$(
+			impl DiscreteElement for $u_wider {
+				#[inline]
+				fn elem_between(start: &Self, end: &Self) -> Option<usize> {
+					if *start <= *end {
+						if let Ok(steps) = usize::try_from(*end - *start) {
+							steps.checked_add(1)
+						} else {
+							None
+						}
+					} else {
+						None
+					}
+				}
+
+				#[inline]
+				fn successor(&self) -> Option<Self> {
+					self.checked_add(1)
+				}
+
+				#[inline]
+				fn predecessor(&self) -> Option<Self> {
+					self.checked_sub(1)
+				}
+			}
+
+			impl DiscreteElement for $i_wider {
+				#[inline]
+				fn elem_between(start: &Self, end: &Self) -> Option<usize> {
+					if *start <= *end {
+						if let Ok(steps) = usize::try_from(end.checked_sub(*start)?) {
+							steps.checked_add(1)
+						} else {
+							None
+						}
+					} else {
+						None
+					}
+				}
+
+				#[inline]
+				fn successor(&self) -> Option<Self> {
+					self.checked_add(1)
+				}
+
+				#[inline]
+				fn predecessor(&self) -> Option<Self> {
+					self.checked_sub(1)
+				}
+			}
+		)+
+	};
+}
+
 use std::{
 	any::Any,
 	collections::{BTreeSet, HashSet},
@@ -428,6 +540,67 @@ where
 }
 
 impl<E: PartialOrd> RangeList<E> {
+	/// Returns the [`Self::position`] pointing at the smallest element greater
+	/// than (or equal to) the given bound.
+	///
+	/// Passing `Bound::Included(x)` will return the position of the smallest
+	/// element greater than or equal to `x`, or `None` if all elements are
+	/// smaller than `x`.
+	///
+	/// Passing `Bound::Excluded(x)` will return the position of the smallest
+	/// element greater than `x`, or `None` if all elements are smaller than or
+	/// equal to `x`.
+	///
+	/// Passing `Bound::Unbounded` will return `None`.
+	///
+	/// # Examples
+	///
+	/// ```
+	/// # use rangelist::RangeList;
+	/// # use std::ops::Bound;
+	/// let rl = RangeList::from_iter([1..=4, 6..=8]);
+	/// assert_eq!(rl.first_position_bound(&Bound::Included(-1)), Some(0));
+	/// assert_eq!(rl.first_position_bound(&Bound::Included(1)), Some(0));
+	/// assert_eq!(rl.first_position_bound(&Bound::Excluded(1)), Some(1));
+	/// assert_eq!(rl.first_position_bound(&Bound::Included(4)), Some(3));
+	/// assert_eq!(rl.first_position_bound(&Bound::Excluded(4)), Some(4));
+	/// assert_eq!(rl.first_position_bound(&Bound::Included(8)), Some(6));
+	///
+	/// assert_eq!(rl.first_position_bound(&Bound::Included(9)), None);
+	/// ```
+	pub fn first_position_bound(&self, bound: &Bound<E>) -> Option<usize>
+	where
+		E: Clone + DiscreteElement,
+	{
+		let elem = match bound {
+			Bound::Included(x) => x,
+			Bound::Excluded(x) => x,
+			Bound::Unbounded => {
+				return None;
+			}
+		};
+		let mut pos = 0;
+		let card = self.card()?;
+		for (start, end) in &self.ranges {
+			if elem < start {
+				return Some(pos);
+			}
+			if elem <= end {
+				pos += DiscreteElement::elem_between(start, elem)?;
+				match bound {
+					Bound::Included(_) => pos -= 1,
+					Bound::Excluded(_) if pos > card => return None,
+					_ => {}
+				}
+				debug_assert!(pos <= card);
+				return Some(pos);
+			}
+			pos += DiscreteElement::elem_between(start, end)?;
+		}
+		debug_assert_eq!(pos, self.card().unwrap());
+		None
+	}
+
 	/// Internal method used to construct a [`RangeList`] from an iterator of
 	/// pairs that is known to be sorted order, but where ranges might still need
 	/// to be merged.
@@ -494,67 +667,6 @@ impl<E: PartialOrd> RangeList<E> {
 	/// ```
 	pub fn is_empty(&self) -> bool {
 		self.ranges.is_empty()
-	}
-
-	/// Returns the [`Self::position`] pointing at the smallest element greater
-	/// than (or equal to) the given bound.
-	///
-	/// Passing `Bound::Included(x)` will return the position of the smallest
-	/// element greater than or equal to `x`, or `None` if all elements are
-	/// smaller than `x`.
-	///
-	/// Passing `Bound::Excluded(x)` will return the position of the smallest
-	/// element greater than `x`, or `None` if all elements are smaller than or
-	/// equal to `x`.
-	///
-	/// Passing `Bound::Unbounded` will return `None`.
-	///
-	/// # Examples
-	///
-	/// ```
-	/// # use rangelist::RangeList;
-	/// # use std::ops::Bound;
-	/// let rl = RangeList::from_iter([1..=4, 6..=8]);
-	/// assert_eq!(rl.first_position_bound(&Bound::Included(-1)), Some(0));
-	/// assert_eq!(rl.first_position_bound(&Bound::Included(1)), Some(0));
-	/// assert_eq!(rl.first_position_bound(&Bound::Excluded(1)), Some(1));
-	/// assert_eq!(rl.first_position_bound(&Bound::Included(4)), Some(3));
-	/// assert_eq!(rl.first_position_bound(&Bound::Excluded(4)), Some(4));
-	/// assert_eq!(rl.first_position_bound(&Bound::Included(8)), Some(6));
-	///
-	/// assert_eq!(rl.first_position_bound(&Bound::Included(9)), None);
-	/// ```
-	pub fn first_position_bound(&self, bound: &Bound<E>) -> Option<usize>
-	where
-		E: Clone + DiscreteElement,
-	{
-		let elem = match bound {
-			Bound::Included(x) => x,
-			Bound::Excluded(x) => x,
-			Bound::Unbounded => {
-				return None;
-			}
-		};
-		let mut pos = 0;
-		let card = self.card()?;
-		for (start, end) in &self.ranges {
-			if elem < start {
-				return Some(pos);
-			}
-			if elem <= end {
-				pos += DiscreteElement::elem_between(start, elem)?;
-				match bound {
-					Bound::Included(_) => pos -= 1,
-					Bound::Excluded(_) if pos > card => return None,
-					_ => {}
-				}
-				debug_assert!(pos <= card);
-				return Some(pos);
-			}
-			pos += DiscreteElement::elem_between(start, end)?;
-		}
-		debug_assert_eq!(pos, self.card().unwrap());
-		None
 	}
 
 	/// Returns an Copying iterator for the ranges in the set.
@@ -853,136 +965,6 @@ where
 	}
 }
 
-/// Macro to help with the implementation of [`DiscreteElements`] for the
-/// integer types in the standard library.
-macro_rules! discrete_elems_impls {
-	{
-		narrower than or same width as usize:
-			$( [ $u_narrower:ident $i_narrower:ident ] ),+;
-		wider than usize:
-			$( [ $u_wider:ident $i_wider:ident ] ),+;
-	} => {
-		$(
-			impl DiscreteElement for $u_narrower {
-				#[inline]
-				fn elem_between(start: &Self, end: &Self) -> Option<usize> {
-					if *start <= *end {
-						// This relies on $u_narrower <= usize
-						#[allow(trivial_numeric_casts, reason = "macro is used for many integer types including usize")]
-						let steps = (*end - *start) as usize;
-						steps.checked_add(1)
-					} else {
-						None
-					}
-				}
-
-				#[inline]
-				fn successor(&self) -> Option<Self> {
-					self.checked_add(1)
-				}
-
-				#[inline]
-				fn predecessor(&self) -> Option<Self> {
-					self.checked_sub(1)
-				}
-			}
-
-			impl DiscreteElement for $i_narrower {
-				#[inline]
-				fn elem_between(start: &Self, end: &Self) -> Option<usize> {
-					if *start <= *end {
-						#[allow(trivial_numeric_casts, reason = "macro is used for many integer types including isize")]
-						let steps = (*end as isize).wrapping_sub(*start as isize) as usize;
-						steps.checked_add(1)
-					} else {
-						None
-					}
-				}
-
-				#[inline]
-				fn successor(&self) -> Option<Self> {
-					self.checked_add(1)
-				}
-
-				#[inline]
-				fn predecessor(&self) -> Option<Self> {
-					self.checked_sub(1)
-				}
-			}
-		)+
-
-		$(
-			impl DiscreteElement for $u_wider {
-				#[inline]
-				fn elem_between(start: &Self, end: &Self) -> Option<usize> {
-					if *start <= *end {
-						if let Ok(steps) = usize::try_from(*end - *start) {
-							steps.checked_add(1)
-						} else {
-							None
-						}
-					} else {
-						None
-					}
-				}
-
-				#[inline]
-				fn successor(&self) -> Option<Self> {
-					self.checked_add(1)
-				}
-
-				#[inline]
-				fn predecessor(&self) -> Option<Self> {
-					self.checked_sub(1)
-				}
-			}
-
-			impl DiscreteElement for $i_wider {
-				#[inline]
-				fn elem_between(start: &Self, end: &Self) -> Option<usize> {
-					if *start <= *end {
-						if let Ok(steps) = usize::try_from(end.checked_sub(*start)?) {
-							steps.checked_add(1)
-						} else {
-							None
-						}
-					} else {
-						None
-					}
-				}
-
-				#[inline]
-				fn successor(&self) -> Option<Self> {
-					self.checked_add(1)
-				}
-
-				#[inline]
-				fn predecessor(&self) -> Option<Self> {
-					self.checked_sub(1)
-				}
-			}
-		)+
-	};
-}
-
-#[cfg(target_pointer_width = "64")]
-discrete_elems_impls! {
-	narrower than or same width as usize: [u8 i8], [u16 i16], [u32 i32], [u64 i64], [usize isize];
-	wider than usize: [u128 i128];
-}
-
-#[cfg(target_pointer_width = "32")]
-discrete_elems_impls! {
-	narrower than or same width as usize: [u8 i8], [u16 i16], [u32 i32], [usize isize];
-	wider than usize: [u64 i64], [u128 i128];
-}
-
-#[cfg(target_pointer_width = "16")]
-discrete_elems_impls! {
-	narrower than or same width as usize: [u8 i8], [u16 i16], [usize isize];
-	wider than usize: [u32 i32], [u64 i64], [u128 i128];
-}
-
 impl<E: PartialOrd + Clone, I, J> Iterator for UnionIter<E, I, J>
 where
 	I: Iterator<Item = RangeInclusive<E>>,
@@ -1042,11 +1024,44 @@ where
 	}
 }
 
+#[cfg(target_pointer_width = "64")]
+discrete_elems_impls! {
+	narrower than or same width as usize: [u8 i8], [u16 i16], [u32 i32], [u64 i64], [usize isize];
+	wider than usize: [u128 i128];
+}
+
+#[cfg(target_pointer_width = "32")]
+discrete_elems_impls! {
+	narrower than or same width as usize: [u8 i8], [u16 i16], [u32 i32], [usize isize];
+	wider than usize: [u64 i64], [u128 i128];
+}
+
+#[cfg(target_pointer_width = "16")]
+discrete_elems_impls! {
+	narrower than or same width as usize: [u8 i8], [u16 i16], [usize isize];
+	wider than usize: [u32 i32], [u64 i64], [u128 i128];
+}
+
 #[cfg(test)]
 mod tests {
 	use expect_test::expect;
 
 	use super::*;
+
+	#[test]
+	fn test_display_rangelist() {
+		let empty: RangeList<i64> = RangeList::default();
+		assert_eq!(empty.to_string(), "1..0");
+
+		let single_range = RangeList::from_iter([1..=4]);
+		assert_eq!(single_range.to_string(), "1..4");
+
+		let multi_range = RangeList::from_iter([1..=4, 6..=7, -5..=-3]);
+		assert_eq!(multi_range.to_string(), "-5..-3 union 1..4 union 6..7");
+
+		let float_range = RangeList::from_iter([0.1..=3.2, 8.1..=50.0]);
+		assert_eq!(float_range.to_string(), "0.1..3.2 union 8.1..50.0");
+	}
 
 	#[test]
 	fn test_rangelist() {
@@ -1099,18 +1114,18 @@ mod tests {
 	}
 
 	#[test]
-	fn test_display_rangelist() {
-		let empty: RangeList<i64> = RangeList::default();
-		assert_eq!(empty.to_string(), "1..0");
+	fn test_set_card() {
+		let empty = RangeList::<i64>::default();
+		assert_eq!(empty.card(), Some(0));
 
-		let single_range = RangeList::from_iter([1..=4]);
-		assert_eq!(single_range.to_string(), "1..4");
+		let full: RangeList<i64> = (i64::MIN..=i64::MAX).into();
+		assert_eq!(full.card(), None);
 
-		let multi_range = RangeList::from_iter([1..=4, 6..=7, -5..=-3]);
-		assert_eq!(multi_range.to_string(), "-5..-3 union 1..4 union 6..7");
+		let x = RangeList::<i8>::from(1..=5);
+		assert_eq!(x.card(), Some(5));
 
-		let float_range = RangeList::from_iter([0.1..=3.2, 8.1..=50.0]);
-		assert_eq!(float_range.to_string(), "0.1..3.2 union 8.1..50.0");
+		let y = RangeList::<u32>::from_iter([1..=2, 4..=6, 8..=9]);
+		assert_eq!(y.card(), Some(7));
 	}
 
 	#[test]
@@ -1153,45 +1168,26 @@ mod tests {
 	}
 
 	#[test]
-	fn test_set_union() {
-		let empty: RangeList<i64> = RangeList::default();
-		let inf: RangeList<i64> = RangeList::from_iter([i64::MIN..=i64::MAX]);
-		let res: RangeList<_> = empty.union(&empty);
-		assert_eq!(res, empty);
-		let res: RangeList<_> = inf.union(&inf);
-		assert_eq!(res, inf);
-		let res: RangeList<_> = empty.union(&inf);
-		assert_eq!(res, inf);
-		let res: RangeList<_> = inf.union(&empty);
-		assert_eq!(res, inf);
+	fn test_set_disjoint() {
+		let empty = RangeList::default();
+		let inf = RangeList::from(i64::MIN..=i64::MAX);
 
-		let x = RangeList::from(1..=5);
-		let y = RangeList::from(4..=9);
-		let z: RangeList<_> = x.union(&y);
-		expect!["1..9"].assert_eq(&z.to_string());
+		assert!(empty.disjoint(&empty));
+		assert!(empty.disjoint(&inf));
+		assert!(inf.disjoint(&empty));
+		assert!(!inf.disjoint(&inf));
 
-		let y = RangeList::from_iter([1..=2, 4..=4]);
-		let z: RangeList<_> = x.union(&y);
-		expect!["1..5"].assert_eq(&z.to_string());
+		let x = RangeList::from_iter([1..=2, 4..=6, 8..=9]);
+		assert!(empty.disjoint(&x));
+		assert!(x.disjoint(&empty));
+		assert!(!x.disjoint(&x));
+		assert!(!inf.disjoint(&x));
+		assert!(!x.disjoint(&inf));
 
-		let y = RangeList::from_iter([-5..=-1, 6..=9]);
-		let z: RangeList<_> = x.union(&y);
-		expect!["-5..-1 union 1..9"].assert_eq(&z.to_string());
-
-		let z: RangeList<_> = y.union(&x);
-		expect!["-5..-1 union 1..9"].assert_eq(&z.to_string());
-
-		let x = RangeList::from(1..=9);
-		let y = RangeList::from_iter([1..=2, 4..=5, 7..=8]);
-		let z: RangeList<_> = x.union(&y);
-		expect!["1..9"].assert_eq(&z.to_string());
-		let z: RangeList<_> = y.union(&x);
-		expect!["1..9"].assert_eq(&z.to_string());
-
-		let x = RangeList::from(1.0..=5.0);
-		let y = RangeList::from(4.0..=9.0);
-		let z: RangeList<_> = x.union(&y);
-		expect!["1.0..9.0"].assert_eq(&z.to_string());
+		let x = RangeList::from_iter([1.0..=2.0, 5.0..=6.0]);
+		let y = RangeList::from_iter([3.0..=4.0, 7.0..=8.0]);
+		assert!(x.disjoint(&y));
+		assert!(y.disjoint(&x));
 	}
 
 	#[test]
@@ -1257,40 +1253,44 @@ mod tests {
 	}
 
 	#[test]
-	fn test_set_disjoint() {
-		let empty = RangeList::default();
-		let inf = RangeList::from(i64::MIN..=i64::MAX);
+	fn test_set_union() {
+		let empty: RangeList<i64> = RangeList::default();
+		let inf: RangeList<i64> = RangeList::from_iter([i64::MIN..=i64::MAX]);
+		let res: RangeList<_> = empty.union(&empty);
+		assert_eq!(res, empty);
+		let res: RangeList<_> = inf.union(&inf);
+		assert_eq!(res, inf);
+		let res: RangeList<_> = empty.union(&inf);
+		assert_eq!(res, inf);
+		let res: RangeList<_> = inf.union(&empty);
+		assert_eq!(res, inf);
 
-		assert!(empty.disjoint(&empty));
-		assert!(empty.disjoint(&inf));
-		assert!(inf.disjoint(&empty));
-		assert!(!inf.disjoint(&inf));
+		let x = RangeList::from(1..=5);
+		let y = RangeList::from(4..=9);
+		let z: RangeList<_> = x.union(&y);
+		expect!["1..9"].assert_eq(&z.to_string());
 
-		let x = RangeList::from_iter([1..=2, 4..=6, 8..=9]);
-		assert!(empty.disjoint(&x));
-		assert!(x.disjoint(&empty));
-		assert!(!x.disjoint(&x));
-		assert!(!inf.disjoint(&x));
-		assert!(!x.disjoint(&inf));
+		let y = RangeList::from_iter([1..=2, 4..=4]);
+		let z: RangeList<_> = x.union(&y);
+		expect!["1..5"].assert_eq(&z.to_string());
 
-		let x = RangeList::from_iter([1.0..=2.0, 5.0..=6.0]);
-		let y = RangeList::from_iter([3.0..=4.0, 7.0..=8.0]);
-		assert!(x.disjoint(&y));
-		assert!(y.disjoint(&x));
-	}
+		let y = RangeList::from_iter([-5..=-1, 6..=9]);
+		let z: RangeList<_> = x.union(&y);
+		expect!["-5..-1 union 1..9"].assert_eq(&z.to_string());
 
-	#[test]
-	fn test_set_card() {
-		let empty = RangeList::<i64>::default();
-		assert_eq!(empty.card(), Some(0));
+		let z: RangeList<_> = y.union(&x);
+		expect!["-5..-1 union 1..9"].assert_eq(&z.to_string());
 
-		let full: RangeList<i64> = (i64::MIN..=i64::MAX).into();
-		assert_eq!(full.card(), None);
+		let x = RangeList::from(1..=9);
+		let y = RangeList::from_iter([1..=2, 4..=5, 7..=8]);
+		let z: RangeList<_> = x.union(&y);
+		expect!["1..9"].assert_eq(&z.to_string());
+		let z: RangeList<_> = y.union(&x);
+		expect!["1..9"].assert_eq(&z.to_string());
 
-		let x = RangeList::<i8>::from(1..=5);
-		assert_eq!(x.card(), Some(5));
-
-		let y = RangeList::<u32>::from_iter([1..=2, 4..=6, 8..=9]);
-		assert_eq!(y.card(), Some(7));
+		let x = RangeList::from(1.0..=5.0);
+		let y = RangeList::from(4.0..=9.0);
+		let z: RangeList<_> = x.union(&y);
+		expect!["1.0..9.0"].assert_eq(&z.to_string());
 	}
 }
