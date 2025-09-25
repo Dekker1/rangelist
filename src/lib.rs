@@ -815,6 +815,78 @@ impl<E: PartialOrd> RangeList<E> {
 		None
 	}
 
+	/// Tightens the lower bound of the range list, removing any (partial) ranges
+	/// that are below the new lower bound.
+	///
+	/// Note that no action is taken if the new lower bound is less than or equal
+	/// to the current lower bound.
+	///
+	/// # Examples
+	///
+	/// ```
+	/// # use rangelist::RangeList;
+	/// let mut r = RangeList::from_iter([-5..=-3, 1..=4, 6..=7]);
+	/// r.set_lower_bound(2);
+	/// assert_eq!(r.lower_bound(), Some(&2));
+	/// assert_eq!(r.iter().collect::<Vec<_>>(), vec![2..=4, 6..=7]);
+	/// ```
+	pub fn set_lower_bound(&mut self, lower_bound: E)
+	where
+		E: Debug,
+	{
+		let first_kept = self
+			.ranges
+			.iter()
+			.enumerate()
+			.find_map(|(i, (_, end))| (*end >= lower_bound).then_some(i));
+		if let Some(start) = first_kept {
+			if self.ranges[start].0 < lower_bound {
+				self.ranges[start].0 = lower_bound;
+			}
+			if start > 0 {
+				for i in start..self.ranges.len() {
+					self.ranges.swap(i, i - start);
+				}
+				self.ranges.truncate(self.ranges.len() - start);
+			}
+		} else {
+			self.ranges = Vec::new();
+		}
+	}
+
+	/// Tightens the upper bound of the range list, removing any (partial) ranges
+	/// that are above the new upper bound.
+	///
+	/// Note that no action is taken if the new upper bound is greater than or
+	/// equal to the current upper bound.
+	///
+	/// # Examples
+	///
+	/// ```
+	/// # use rangelist::RangeList;
+	/// let mut r = RangeList::from_iter([-5..=-3, 1..=4, 6..=7]);
+	/// r.set_upper_bound(3);
+	/// assert_eq!(r.upper_bound(), Some(&3));
+	/// assert_eq!(r.iter().collect::<Vec<_>>(), vec![-5..=-3, 1..=3]);
+	/// ```
+	pub fn set_upper_bound(&mut self, upper_bound: E) {
+		let last_kept = self
+			.ranges
+			.iter()
+			.enumerate()
+			.rfind(|(_, (start, _))| *start <= upper_bound)
+			.map(|(i, _)| i);
+		if let Some(end) = last_kept {
+			self.ranges.truncate(end + 1);
+			let last = self.ranges.last_mut().unwrap();
+			if last.1 > upper_bound {
+				last.1 = upper_bound;
+			}
+		} else {
+			self.ranges = Vec::new();
+		}
+	}
+
 	/// Returns the upper bound of the range list, or `None` if the range list is
 	/// empty
 	///
@@ -1125,6 +1197,49 @@ mod tests {
 		RangeList::from_iter([0.1..=3.2, 8.1..=50.0])
 "#]]
 		.assert_debug_eq(&float_range);
+	}
+
+	#[test]
+	fn test_set_bounds() {
+		let mut empty = RangeList::<i64>::default();
+		empty.set_lower_bound(10);
+		empty.set_upper_bound(20);
+		assert_eq!(empty.lower_bound(), None);
+		assert_eq!(empty.upper_bound(), None);
+
+		let mut r = RangeList::<i64>::from_iter([1..=2, 4..=6, 8..=9]);
+		r.set_lower_bound(0);
+		assert_eq!(r.lower_bound(), Some(&1));
+		r.set_lower_bound(1);
+		assert_eq!(r.lower_bound(), Some(&1));
+		r.set_lower_bound(2);
+		assert_eq!(r.lower_bound(), Some(&2));
+		r.set_lower_bound(4);
+		assert_eq!(r.lower_bound(), Some(&4));
+		assert_eq!(r.iter().collect::<Vec<_>>(), vec![4..=6, 8..=9]);
+		r.set_lower_bound(9);
+		assert_eq!(r.lower_bound(), Some(&9));
+		assert_eq!(r.iter().collect::<Vec<_>>(), vec![9..=9]);
+		r.set_lower_bound(10);
+		assert_eq!(r.lower_bound(), None);
+		assert!(r.is_empty());
+
+		let mut r = RangeList::<i64>::from_iter([1..=2, 4..=6, 8..=9]);
+		r.set_upper_bound(10);
+		assert_eq!(r.upper_bound(), Some(&9));
+		r.set_upper_bound(9);
+		assert_eq!(r.upper_bound(), Some(&9));
+		r.set_upper_bound(8);
+		assert_eq!(r.upper_bound(), Some(&8));
+		r.set_upper_bound(6);
+		assert_eq!(r.upper_bound(), Some(&6));
+		assert_eq!(r.iter().collect::<Vec<_>>(), vec![1..=2, 4..=6]);
+		r.set_upper_bound(1);
+		assert_eq!(r.upper_bound(), Some(&1));
+		assert_eq!(r.iter().collect::<Vec<_>>(), vec![1..=1]);
+		r.set_upper_bound(0);
+		assert_eq!(r.upper_bound(), None);
+		assert!(r.is_empty());
 	}
 
 	#[test]
