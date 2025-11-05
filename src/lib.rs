@@ -25,12 +25,11 @@ macro_rules! discrete_elems_impls {
 		$(
 			impl DiscreteElement for $u_narrower {
 				#[inline]
-				fn elem_between(start: &Self, end: &Self) -> Option<usize> {
+				fn steps_between(start: &Self, end: &Self) -> Option<usize> {
 					if *start <= *end {
 						// This relies on $u_narrower <= usize
 						#[allow(trivial_numeric_casts, reason = "macro is used for many integer types including usize")]
-						let steps = (*end - *start) as usize;
-						steps.checked_add(1)
+						Some((*end - *start) as usize)
 					} else {
 						None
 					}
@@ -49,11 +48,10 @@ macro_rules! discrete_elems_impls {
 
 			impl DiscreteElement for $i_narrower {
 				#[inline]
-				fn elem_between(start: &Self, end: &Self) -> Option<usize> {
+				fn steps_between(start: &Self, end: &Self) -> Option<usize> {
 					if *start <= *end {
 						#[allow(trivial_numeric_casts, reason = "macro is used for many integer types including isize")]
-						let steps = (*end as isize).wrapping_sub(*start as isize) as usize;
-						steps.checked_add(1)
+						Some((*end as isize).wrapping_sub(*start as isize) as usize)
 					} else {
 						None
 					}
@@ -74,13 +72,9 @@ macro_rules! discrete_elems_impls {
 		$(
 			impl DiscreteElement for $u_wider {
 				#[inline]
-				fn elem_between(start: &Self, end: &Self) -> Option<usize> {
+				fn steps_between(start: &Self, end: &Self) -> Option<usize> {
 					if *start <= *end {
-						if let Ok(steps) = usize::try_from(*end - *start) {
-							steps.checked_add(1)
-						} else {
-							None
-						}
+						usize::try_from(*end - *start).ok()
 					} else {
 						None
 					}
@@ -99,13 +93,9 @@ macro_rules! discrete_elems_impls {
 
 			impl DiscreteElement for $i_wider {
 				#[inline]
-				fn elem_between(start: &Self, end: &Self) -> Option<usize> {
+				fn steps_between(start: &Self, end: &Self) -> Option<usize> {
 					if *start <= *end {
-						if let Ok(steps) = usize::try_from(end.checked_sub(*start)?) {
-							steps.checked_add(1)
-						} else {
-							None
-						}
+						usize::try_from(end.checked_sub(*start)?).ok()
 					} else {
 						None
 					}
@@ -158,7 +148,7 @@ pub struct DiffIter<
 // Note that the methods in this trait are inspired by the `Step` trait and can
 // be replaced when this is merged into stable Rust.
 pub trait DiscreteElement: Sized {
-	/// Returns the number of *elements* between `start` to `end` (inclusive).
+	/// Returns the number of *steps* between `start` to `end` (inclusive).
 	///
 	/// Returns `None` if the number of steps would overflow `usize`, or cannot be
 	/// determined.
@@ -167,10 +157,10 @@ pub trait DiscreteElement: Sized {
 	///
 	/// For any `a`, `b`, and `n`:
 	///
-	/// - `elem_between(&a, &b) == Some(n)` only if `a <= b`
-	/// - `elem_between(&a, &b) == Some(0)` if and only if `a == b`
-	/// - `elem_between(&a, &b) == None` if `a > b`
-	fn elem_between(start: &Self, end: &Self) -> Option<usize>;
+	/// - `steps_between(&a, &b) == Some(n)` only if `a + n == b`
+	/// - `steps_between(&a, &b) == Some(0)` if and only if `a == b`
+	/// - `steps_between(&a, &b) == None` if `a > b` or `b - a > usize::MAX`
+	fn steps_between(start: &Self, end: &Self) -> Option<usize>;
 
 	/// Returns the element that would be considered by the *successor* of `self`,
 	/// or `None` if it should be considered the largest possible element.
@@ -211,10 +201,10 @@ pub trait IntervalIterator<E: PartialOrd> {
 	where
 		E: DiscreteElement,
 	{
-		let mut card = 0;
+		let mut card: usize = 0;
 		for r in self.intervals() {
-			match DiscreteElement::elem_between(r.start(), r.end()) {
-				Some(c) => card += c,
+			match DiscreteElement::steps_between(r.start(), r.end()) {
+				Some(c) => card = card.checked_add(c)?.checked_add(1)?,
 				None => return None,
 			}
 		}
@@ -341,13 +331,14 @@ pub struct RangeList<E: PartialOrd> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// An `RangeOrdering` is the result of a comparison between two ranges of values.
 enum RangeOrdering {
-	/// A compared range is strictly less than another.
-	Less = -1,
-	/// A compared range overlaps with another.
-	Overlap = 0,
-	/// A compared range is strictly greater than another.
-	Greater = 1,
+	/// A left range is strictly less than the right range.
+	Less,
+	/// A compared ranges overlap with each other.
+	Overlap,
+	/// A left range is strictly greater than the right range.
+	Greater,
 }
 
 /// An iterator combinator that given two iterators yielding ordered ranges,
@@ -600,16 +591,16 @@ impl<E: PartialOrd> RangeList<E> {
 				return Some(pos);
 			}
 			if elem <= end {
-				pos += DiscreteElement::elem_between(start, elem)?;
+				pos += DiscreteElement::steps_between(start, elem)?;
 				match bound {
-					Bound::Included(_) => pos -= 1,
 					Bound::Excluded(_) if pos > card => return None,
+					Bound::Excluded(_) => pos += 1,
 					_ => {}
 				}
 				debug_assert!(pos <= card);
 				return Some(pos);
 			}
-			pos += DiscreteElement::elem_between(start, end)?;
+			pos += DiscreteElement::steps_between(start, end)? + 1;
 		}
 		debug_assert_eq!(pos, self.card().unwrap());
 		None
@@ -630,35 +621,35 @@ impl<E: PartialOrd> RangeList<E> {
 		for next in it {
 			// Determine distance between the two ranges if the elements are discrete.
 			let inbetween: &dyn Any = &(cur.1.clone(), next.0.clone());
-			let dist = if let Some((ub, lb)) = inbetween.downcast_ref::<(isize, _)>() {
-				DiscreteElement::elem_between(ub, lb)
-			} else if let Some((ub, lb)) = inbetween.downcast_ref::<(i128, _)>() {
-				DiscreteElement::elem_between(ub, lb)
-			} else if let Some((ub, lb)) = inbetween.downcast_ref::<(i64, _)>() {
-				DiscreteElement::elem_between(ub, lb)
-			} else if let Some((ub, lb)) = inbetween.downcast_ref::<(i32, _)>() {
-				DiscreteElement::elem_between(ub, lb)
-			} else if let Some((ub, lb)) = inbetween.downcast_ref::<(i16, _)>() {
-				DiscreteElement::elem_between(ub, lb)
-			} else if let Some((ub, lb)) = inbetween.downcast_ref::<(i8, _)>() {
-				DiscreteElement::elem_between(ub, lb)
-			} else if let Some((ub, lb)) = inbetween.downcast_ref::<(usize, _)>() {
-				DiscreteElement::elem_between(ub, lb)
-			} else if let Some((ub, lb)) = inbetween.downcast_ref::<(u128, _)>() {
-				DiscreteElement::elem_between(ub, lb)
-			} else if let Some((ub, lb)) = inbetween.downcast_ref::<(u64, _)>() {
-				DiscreteElement::elem_between(ub, lb)
-			} else if let Some((ub, lb)) = inbetween.downcast_ref::<(u32, _)>() {
-				DiscreteElement::elem_between(ub, lb)
-			} else if let Some((ub, lb)) = inbetween.downcast_ref::<(u16, _)>() {
-				DiscreteElement::elem_between(ub, lb)
-			} else if let Some((ub, lb)) = inbetween.downcast_ref::<(u8, _)>() {
-				DiscreteElement::elem_between(ub, lb)
+			let dist = if let Some((cur_end, next_start)) = inbetween.downcast_ref::<(isize, _)>() {
+				DiscreteElement::steps_between(cur_end, next_start)
+			} else if let Some((cur_end, next_start)) = inbetween.downcast_ref::<(i128, _)>() {
+				DiscreteElement::steps_between(cur_end, next_start)
+			} else if let Some((cur_end, next_start)) = inbetween.downcast_ref::<(i64, _)>() {
+				DiscreteElement::steps_between(cur_end, next_start)
+			} else if let Some((cur_end, next_start)) = inbetween.downcast_ref::<(i32, _)>() {
+				DiscreteElement::steps_between(cur_end, next_start)
+			} else if let Some((cur_end, next_start)) = inbetween.downcast_ref::<(i16, _)>() {
+				DiscreteElement::steps_between(cur_end, next_start)
+			} else if let Some((cur_end, next_start)) = inbetween.downcast_ref::<(i8, _)>() {
+				DiscreteElement::steps_between(cur_end, next_start)
+			} else if let Some((cur_end, next_start)) = inbetween.downcast_ref::<(usize, _)>() {
+				DiscreteElement::steps_between(cur_end, next_start)
+			} else if let Some((cur_end, next_start)) = inbetween.downcast_ref::<(u128, _)>() {
+				DiscreteElement::steps_between(cur_end, next_start)
+			} else if let Some((cur_end, next_start)) = inbetween.downcast_ref::<(u64, _)>() {
+				DiscreteElement::steps_between(cur_end, next_start)
+			} else if let Some((cur_end, next_start)) = inbetween.downcast_ref::<(u32, _)>() {
+				DiscreteElement::steps_between(cur_end, next_start)
+			} else if let Some((cur_end, next_start)) = inbetween.downcast_ref::<(u16, _)>() {
+				DiscreteElement::steps_between(cur_end, next_start)
+			} else if let Some((cur_end, next_start)) = inbetween.downcast_ref::<(u8, _)>() {
+				DiscreteElement::steps_between(cur_end, next_start)
 			} else {
 				None
 			};
 
-			if cur.1 >= next.0 || dist.unwrap_or(usize::MAX) <= 2 {
+			if cur.1 >= next.0 || dist.unwrap_or(usize::MAX) <= 1 {
 				cur.1 = next.1
 			} else {
 				ranges.push(cur);
@@ -756,13 +747,13 @@ impl<E: PartialOrd> RangeList<E> {
 				return Some(pos);
 			}
 			if elem >= start {
-				pos -= DiscreteElement::elem_between(elem, end)?;
+				pos -= DiscreteElement::steps_between(elem, end)? + 1;
 				if matches!(bound, Bound::Excluded(_)) {
 					pos -= 1;
 				}
 				return Some(pos);
 			}
-			pos -= DiscreteElement::elem_between(start, end)?;
+			pos -= DiscreteElement::steps_between(start, end)? + 1;
 		}
 		unreachable!()
 	}
@@ -807,10 +798,10 @@ impl<E: PartialOrd> RangeList<E> {
 				return None;
 			}
 			if elem <= end {
-				let elems = DiscreteElement::elem_between(start, elem)?;
-				return Some(pos + elems - 1);
+				let elems = DiscreteElement::steps_between(start, elem)?;
+				return Some(pos + elems);
 			}
-			pos += DiscreteElement::elem_between(start, end)?;
+			pos += DiscreteElement::steps_between(start, end)? + 1;
 		}
 		None
 	}
