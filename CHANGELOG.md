@@ -5,12 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2025-11-06
+
+### Added
+
+- Add `RangeList::from_sorted_ranges` and `RangeList::from_sorted_elements`
+  methods to contruct `RangeList` more efficiently when the input is already
+  sorted.
+
+### Changed
+
+- Replace the ill-defined and implemented `DiscreteElement::elems_between`
+  method with `DiscreteElement::steps_between`, which returns the number of
+  discrete steps between two elements, or `None` if that number overflows
+  `usize`.
+
 ## [0.3.2] - 2025-09-25
 
 ### Added
 
-- Add `Rangelist::set_lower_bound` and `Rangelist::set_upper_bound` methods to
-  tighten the lower and upper bounds of a `Rangelist`.
+- Add `RangeList::set_lower_bound` and `RangeList::set_upper_bound` methods to
+  tighten the lower and upper bounds of a `RangeList`.
 
 ## [0.3.1] - 2025-08-13
 
