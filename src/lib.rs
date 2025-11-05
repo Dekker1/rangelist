@@ -606,19 +606,66 @@ impl<E: PartialOrd> RangeList<E> {
 		None
 	}
 
-	/// Internal method used to construct a [`RangeList`] from an iterator of
-	/// pairs that is known to be sorted order, but where ranges might still need
-	/// to be merged.
-	fn from_sorted_iter<T: IntoIterator<Item = (E, E)>>(iter: T) -> Self
+	/// Construct a [`RangeList`] from an iterator of elements that are known to
+	/// be yielded in sorted (increasing) order, but where duplicates might still
+	/// exist.
+	///
+	/// # Warning
+	///
+	/// This function will panic if the iterator yields a larger element than one
+	/// yielded previously.
+	pub fn from_sorted_elements<T: IntoIterator<Item = E>>(iter: T) -> Self
+	where
+		E: DiscreteElement + Clone,
+	{
+		let mut it = iter.into_iter();
+		let mut ranges = Vec::new();
+		let Some(mut start) = it.next() else {
+			return Self::default();
+		};
+		let mut end = start.clone();
+		for next in it {
+			if next < end {
+				panic!("elements must be yielded in sorted order");
+			}
+			if next == end {
+				continue;
+			}
+
+			if end.successor().unwrap() == next {
+				end = next;
+			} else {
+				ranges.push((start, end));
+				start = next.clone();
+				end = next;
+			}
+		}
+		ranges.push((start, end));
+		Self { ranges }
+	}
+
+	/// Construct a [`RangeList`] from an iterator of inclusive ranges that are
+	/// known to be yielded in sorted (increasing) order, but where ranges might
+	/// still need to be merged.
+	///
+	/// # Warning
+	///
+	/// This function will panic if the iterator yields a strictly larger range
+	/// than the previous one.
+	pub fn from_sorted_ranges<T: IntoIterator<Item = RangeInclusive<E>>>(iter: T) -> Self
 	where
 		E: Any + Clone,
 	{
 		let mut it = iter.into_iter();
 		let mut ranges = Vec::new();
-		let Some(mut cur) = it.next() else {
+		let Some(mut cur) = it.next().map(|r| (r.start().clone(), r.end().clone())) else {
 			return Self::default();
 		};
 		for next in it {
+			if next.start() < &cur.0 {
+				panic!("ranges must be yielded in sorted order");
+			}
+			let next = (next.start().clone(), next.end().clone());
 			// Determine distance between the two ranges if the elements are discrete.
 			let inbetween: &dyn Any = &(cur.1.clone(), next.0.clone());
 			let dist = if let Some((cur_end, next_start)) = inbetween.downcast_ref::<(isize, _)>() {
@@ -970,22 +1017,17 @@ where
 	R: Into<RangeInclusive<E>>,
 {
 	fn from_iter<T: IntoIterator<Item = R>>(iter: T) -> Self {
-		let mut non_empty: Vec<(E, E)> = iter
+		let mut non_empty: Vec<RangeInclusive<E>> = iter
 			.into_iter()
-			.filter_map(|r| {
-				let r = r.into();
-				if r.is_empty() {
-					None
-				} else {
-					Some((r.start().clone(), r.end().clone()))
-				}
-			})
+			.map(|r| r.into())
+			.filter(|r| !r.is_empty())
 			.collect();
 		non_empty.sort_by(|a, b| {
-			a.0.partial_cmp(&b.0)
+			a.start()
+				.partial_cmp(b.start())
 				.expect("the order of the bounds in the RangeList cannot be partial")
 		});
-		Self::from_sorted_iter(non_empty)
+		Self::from_sorted_ranges(non_empty)
 	}
 }
 
@@ -1138,6 +1180,46 @@ mod tests {
 
 		let float_range = RangeList::from_iter([0.1..=3.2, 8.1..=50.0]);
 		assert_eq!(float_range.to_string(), "0.1..3.2 union 8.1..50.0");
+	}
+
+	#[test]
+	fn test_from_sorted_elements() {
+		// Sorted elements (with duplicates) should be collapsed into ranges.
+		let elems = [1_u32, 1, 2, 4, 5, 6];
+		let rl = RangeList::from_sorted_elements(elems);
+		let expected = RangeList::from_iter([1_u32..=2, 4..=6]);
+		assert_eq!(rl, expected);
+
+		// Single element produces a single 1-length range.
+		let rl2 = RangeList::from_sorted_elements([10_u8]);
+		let expected2 = RangeList::from_iter([10_u8..=10]);
+		assert_eq!(rl2, expected2);
+
+		// Empty iterator yields empty/default RangeList.
+		let rl_empty: RangeList<u32> = RangeList::from_sorted_elements([]);
+		assert!(rl_empty.is_empty());
+	}
+
+	#[test]
+	fn test_from_sorted_ranges() {
+		// Sorted ranges with overlap and adjacency should be merged.
+		let rl = RangeList::from_sorted_ranges([1..=2, 2..=4, 6..=7]);
+		let expected = RangeList::from_iter([1..=4, 6..=7]);
+		assert_eq!(rl, expected);
+
+		// Also works for signed types and preserves order.
+		let rl2 = RangeList::from_sorted_ranges([-5..=-3, -3..=-1, 0..=0]);
+		let expected2 = RangeList::from_iter([-5..=-1, 0..=0]);
+		assert_eq!(rl2, expected2);
+
+		// Floating point ranges: overlapping/adjacent floats should be merged.
+		let rl3 = RangeList::from_sorted_ranges([0.1..=3.2, 3.2..=4.0]);
+		let expected3 = RangeList::from_iter([0.1..=4.0]);
+		assert_eq!(rl3, expected3);
+
+		// Empty iterator returns empty/default RangeList.
+		let rl_empty: RangeList<f64> = RangeList::from_sorted_ranges([]);
+		assert!(rl_empty.is_empty());
 	}
 
 	#[test]
