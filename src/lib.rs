@@ -144,14 +144,13 @@ pub struct DiffIter<
 
 /// Trait implemented for type that should be considered discrete elements when
 /// part of a [`RangeList`].
-///
 // Note that the methods in this trait are inspired by the `Step` trait and can
 // be replaced when this is merged into stable Rust.
 pub trait DiscreteElement: Sized {
 	/// Returns the number of *steps* between `start` to `end` (inclusive).
 	///
-	/// Returns `None` if the number of steps would overflow `usize`, or cannot be
-	/// determined.
+	/// Returns `None` if the number of steps would overflow `usize`, or cannot
+	/// be determined.
 	///
 	/// # Invariants
 	///
@@ -162,8 +161,9 @@ pub trait DiscreteElement: Sized {
 	/// - `steps_between(&a, &b) == None` if `a > b` or `b - a > usize::MAX`
 	fn steps_between(start: &Self, end: &Self) -> Option<usize>;
 
-	/// Returns the element that would be considered by the *successor* of `self`,
-	/// or `None` if it should be considered the largest possible element.
+	/// Returns the element that would be considered by the *successor* of
+	/// `self`, or `None` if it should be considered the largest possible
+	/// element.
 	fn successor(&self) -> Option<Self>;
 
 	/// Returns the element that would be considered by the *predecessor* of
@@ -331,7 +331,8 @@ pub struct RangeList<E: PartialOrd> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-/// An `RangeOrdering` is the result of a comparison between two ranges of values.
+/// An `RangeOrdering` is the result of a comparison between two ranges of
+/// values.
 enum RangeOrdering {
 	/// A left range is strictly less than the right range.
 	Less,
@@ -358,20 +359,12 @@ pub struct UnionIter<
 
 /// Returns the maximum of two values that implement PartialOrd
 fn max<E: PartialOrd>(a: E, b: E) -> E {
-	if a > b {
-		a
-	} else {
-		b
-	}
+	if a > b { a } else { b }
 }
 
 /// Returns the minimum of two values that implement PartialOrd
 fn min<E: PartialOrd>(a: E, b: E) -> E {
-	if a < b {
-		a
-	} else {
-		b
-	}
+	if a < b { a } else { b }
 }
 
 /// Returns whether two Ranges overlap
@@ -407,7 +400,8 @@ where
 		}
 	}
 
-	/// Create a new [`DiffIter`] from two set types that implement the [`IntervalIterator`] trait.
+	/// Create a new [`DiffIter`] from two set types that implement the
+	/// [`IntervalIterator`] trait.
 	pub fn new<A, B>(lhs: &A, rhs: &B) -> Self
 	where
 		A: IntervalIterator<E, IntervalIter = I>,
@@ -495,7 +489,8 @@ where
 	I: Iterator<Item = RangeInclusive<E>>,
 	J: Iterator<Item = RangeInclusive<E>>,
 {
-	/// Create a new [`IntersectIter`] from two iterators yielding ordered ranges.
+	/// Create a new [`IntersectIter`] from two iterators yielding ordered
+	/// ranges.
 	pub fn from_iters(lhs: I, rhs: J) -> Self {
 		Self {
 			lhs: lhs.peekable(),
@@ -503,7 +498,8 @@ where
 		}
 	}
 
-	/// Create a new [`IntersectIter`] from two set types that implement the [`IntervalIterator`] trait.
+	/// Create a new [`IntersectIter`] from two set types that implement the
+	/// [`IntervalIterator`] trait.
 	pub fn new<A, B>(lhs: &A, rhs: &B) -> Self
 	where
 		A: IntervalIterator<E, IntervalIter = I>,
@@ -607,13 +603,13 @@ impl<E: PartialOrd> RangeList<E> {
 	}
 
 	/// Construct a [`RangeList`] from an iterator of elements that are known to
-	/// be yielded in sorted (increasing) order, but where duplicates might still
-	/// exist.
+	/// be yielded in sorted (increasing) order, but where duplicates might
+	/// still exist.
 	///
 	/// # Warning
 	///
-	/// This function will panic if the iterator yields a larger element than one
-	/// yielded previously.
+	/// This function will panic if the iterator yields a larger element than
+	/// one yielded previously.
 	pub fn from_sorted_elements<T: IntoIterator<Item = E>>(iter: T) -> Self
 	where
 		E: DiscreteElement + Clone,
@@ -742,8 +738,8 @@ impl<E: PartialOrd> RangeList<E> {
 	/// than (or equal to) the given bound.
 	///
 	/// Passing `Bound::Included(x)` will return the position of the largest
-	/// element smaller than or equal to `x`, or `None` if all elements are larger
-	/// `x`.
+	/// element smaller than or equal to `x`, or `None` if all elements are
+	/// larger `x`.
 	///
 	/// Passing `Bound::Excluded(x)` will return the position of the largest
 	/// element smaller than `x`, or `None` if all elements are larger than or
@@ -805,8 +801,8 @@ impl<E: PartialOrd> RangeList<E> {
 		unreachable!()
 	}
 
-	/// Returns the lower bound of the range list, or `None` if the range list is
-	/// empty.
+	/// Returns the lower bound of the range list, or `None` if the range list
+	/// is empty.
 	///
 	/// # Examples
 	///
@@ -853,11 +849,11 @@ impl<E: PartialOrd> RangeList<E> {
 		None
 	}
 
-	/// Tightens the lower bound of the range list, removing any (partial) ranges
-	/// that are below the new lower bound.
+	/// Tightens the lower bound of the range list, removing any (partial)
+	/// ranges that are below the new lower bound.
 	///
-	/// Note that no action is taken if the new lower bound is less than or equal
-	/// to the current lower bound.
+	/// Note that no action is taken if the new lower bound is less than or
+	/// equal to the current lower bound.
 	///
 	/// # Examples
 	///
@@ -892,8 +888,8 @@ impl<E: PartialOrd> RangeList<E> {
 		}
 	}
 
-	/// Tightens the upper bound of the range list, removing any (partial) ranges
-	/// that are above the new upper bound.
+	/// Tightens the upper bound of the range list, removing any (partial)
+	/// ranges that are above the new upper bound.
 	///
 	/// Note that no action is taken if the new upper bound is greater than or
 	/// equal to the current upper bound.
@@ -925,8 +921,8 @@ impl<E: PartialOrd> RangeList<E> {
 		}
 	}
 
-	/// Returns the upper bound of the range list, or `None` if the range list is
-	/// empty
+	/// Returns the upper bound of the range list, or `None` if the range list
+	/// is empty
 	///
 	/// # Examples
 	///
@@ -1074,7 +1070,8 @@ where
 		}
 	}
 
-	/// Create a new [`UnionIter`] from two set types that implement the [`IntervalIterator`] trait.
+	/// Create a new [`UnionIter`] from two set types that implement the
+	/// [`IntervalIterator`] trait.
 	pub fn new<A, B>(lhs: &A, rhs: &B) -> Self
 	where
 		A: IntervalIterator<E, IntervalIter = I>,
@@ -1119,19 +1116,19 @@ where
 					let _ = self.lhs.next();
 					let _ = self.rhs.next();
 					loop {
-						if let Some(l) = self.lhs.peek() {
-							if overlap(&ext, l) == RangeOrdering::Overlap {
-								ext = ext.start().clone()..=max(ext.end(), l.end()).clone();
-								let _ = self.lhs.next();
-								continue;
-							}
+						if let Some(l) = self.lhs.peek()
+							&& overlap(&ext, l) == RangeOrdering::Overlap
+						{
+							ext = ext.start().clone()..=max(ext.end(), l.end()).clone();
+							let _ = self.lhs.next();
+							continue;
 						}
-						if let Some(r) = self.rhs.peek() {
-							if overlap(&ext, r) == RangeOrdering::Overlap {
-								ext = ext.start().clone()..=max(ext.end(), r.end()).clone();
-								let _ = self.rhs.next();
-								continue;
-							}
+						if let Some(r) = self.rhs.peek()
+							&& overlap(&ext, r) == RangeOrdering::Overlap
+						{
+							ext = ext.start().clone()..=max(ext.end(), r.end()).clone();
+							let _ = self.rhs.next();
+							continue;
 						}
 						break;
 					}
