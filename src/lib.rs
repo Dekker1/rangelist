@@ -147,6 +147,11 @@ pub struct DiffIter<
 // Note that the methods in this trait are inspired by the `Step` trait and can
 // be replaced when this is merged into stable Rust.
 pub trait DiscreteElement: Sized {
+	/// Returns the element that would be considered by the *predecessor* of
+	/// `self`, or `None` if it should be considered the smallest possible
+	/// element.
+	fn predecessor(&self) -> Option<Self>;
+
 	/// Returns the number of *steps* between `start` to `end` (inclusive).
 	///
 	/// Returns `None` if the number of steps would overflow `usize`, or cannot
@@ -165,11 +170,6 @@ pub trait DiscreteElement: Sized {
 	/// `self`, or `None` if it should be considered the largest possible
 	/// element.
 	fn successor(&self) -> Option<Self>;
-
-	/// Returns the element that would be considered by the *predecessor* of
-	/// `self`, or `None` if it should be considered the smallest possible
-	/// element.
-	fn predecessor(&self) -> Option<Self>;
 }
 
 /// An iterator combinator that given two iterators yielding ordered ranges,
@@ -191,8 +191,6 @@ pub struct IntersectIter<
 pub trait IntervalIterator<E: PartialOrd> {
 	/// The type of the interval iterator.
 	type IntervalIter: Iterator<Item = RangeInclusive<E>>;
-	/// Returns an iterator over the ordered intervals.
-	fn intervals(&self) -> Self::IntervalIter;
 
 	/// Returns the number of elements contained within the RangeList.
 	///
@@ -203,10 +201,8 @@ pub trait IntervalIterator<E: PartialOrd> {
 	{
 		let mut card: usize = 0;
 		for r in self.intervals() {
-			match DiscreteElement::steps_between(r.start(), r.end()) {
-				Some(c) => card = card.checked_add(c)?.checked_add(1)?,
-				None => return None,
-			}
+			let c = DiscreteElement::steps_between(r.start(), r.end())?;
+			card = card.checked_add(c)?.checked_add(1)?
 		}
 		Some(card)
 	}
@@ -272,6 +268,8 @@ pub trait IntervalIterator<E: PartialOrd> {
 	{
 		IntersectIter::from_iters(self.intervals(), other.intervals()).collect()
 	}
+	/// Returns an iterator over the ordered intervals.
+	fn intervals(&self) -> Self::IntervalIter;
 
 	/// Returns whether `self` is a subset of `other`
 	fn subset<O: IntervalIterator<E> + ?Sized>(&self, other: &O) -> bool {
@@ -767,7 +765,7 @@ impl<E: PartialOrd> RangeList<E> {
 		E: Clone + DiscreteElement,
 	{
 		let mut pos = self.card()?;
-		let lb = self.lower_bound()?;
+		let lb = self.min()?;
 		let elem = match bound {
 			Bound::Included(x) => {
 				if x < lb {
@@ -803,17 +801,40 @@ impl<E: PartialOrd> RangeList<E> {
 
 	/// Returns the lower bound of the range list, or `None` if the range list
 	/// is empty.
+	#[deprecated(since = "0.5.0", note = "use `min` instead")]
+	pub fn lower_bound(&self) -> Option<&E> {
+		self.min()
+	}
+
+	/// Returns the maximum element of the range list, or `None` if the range
+	/// list is empty.
 	///
 	/// # Examples
 	///
 	/// ```
 	/// # use rangelist::RangeList;
-	/// assert_eq!(RangeList::from_iter([1..=4]).lower_bound(), Some(&1));
-	/// assert_eq!(RangeList::from_iter([1..=4, 6..=7, -5..=-3]).lower_bound(), Some(&-5));
+	/// assert_eq!(RangeList::from_iter([1..=4]).max(), Some(&4));
+	/// assert_eq!(RangeList::from_iter([1..=4, 6..=7, -5..=-3]).max(), Some(&7));
 	///
-	/// assert_eq!(RangeList::<i64>::default().lower_bound(), None);
+	/// assert_eq!(RangeList::<i64>::default().max(), None);
 	/// ```
-	pub fn lower_bound(&self) -> Option<&E> {
+	pub fn max(&self) -> Option<&E> {
+		self.ranges.last().map(|(_, end)| end)
+	}
+
+	/// Returns the minimum element of the range list, or `None` if the range
+	/// list is empty.
+	///
+	/// # Examples
+	///
+	/// ```
+	/// # use rangelist::RangeList;
+	/// assert_eq!(RangeList::from_iter([1..=4]).min(), Some(&1));
+	/// assert_eq!(RangeList::from_iter([1..=4, 6..=7, -5..=-3]).min(), Some(&-5));
+	///
+	/// assert_eq!(RangeList::<i64>::default().min(), None);
+	/// ```
+	pub fn min(&self) -> Option<&E> {
 		self.ranges.first().map(|(start, _)| start)
 	}
 
@@ -851,20 +872,70 @@ impl<E: PartialOrd> RangeList<E> {
 
 	/// Tightens the lower bound of the range list, removing any (partial)
 	/// ranges that are below the new lower bound.
+	#[deprecated(since = "0.5.0", note = "use `tighten_min` instead")]
+	pub fn set_lower_bound(&mut self, lower_bound: E)
+	where
+		E: Debug,
+	{
+		self.tighten_min(lower_bound)
+	}
+
+	/// Tightens the upper bound of the range list, removing any (partial)
+	/// ranges that are above the new upper bound.
+	#[deprecated(since = "0.5.0", note = "use `tighten_max` instead")]
+	pub fn set_upper_bound(&mut self, upper_bound: E) {
+		self.tighten_max(upper_bound)
+	}
+
+	/// Tightens the maximum of the range list, removing any (partial) ranges
+	/// that are above the new maximum.
 	///
-	/// Note that no action is taken if the new lower bound is less than or
-	/// equal to the current lower bound.
+	/// Note that no action is taken if `max` is greater than or equal to the
+	/// current maximum.
 	///
 	/// # Examples
 	///
 	/// ```
 	/// # use rangelist::RangeList;
 	/// let mut r = RangeList::from_iter([-5..=-3, 1..=4, 6..=7]);
-	/// r.set_lower_bound(2);
-	/// assert_eq!(r.lower_bound(), Some(&2));
+	/// r.tighten_max(3);
+	/// assert_eq!(r.max(), Some(&3));
+	/// assert_eq!(r.iter().collect::<Vec<_>>(), vec![-5..=-3, 1..=3]);
+	/// ```
+	pub fn tighten_max(&mut self, max: E) {
+		let last_kept = self
+			.ranges
+			.iter()
+			.enumerate()
+			.rfind(|(_, (start, _))| *start <= max)
+			.map(|(i, _)| i);
+		if let Some(end) = last_kept {
+			self.ranges.truncate(end + 1);
+			let last = self.ranges.last_mut().unwrap();
+			if last.1 > max {
+				last.1 = max;
+			}
+		} else {
+			self.ranges = Vec::new();
+		}
+	}
+
+	/// Tightens the minimum of the range list, removing any (partial) ranges
+	/// that are below the new minimum.
+	///
+	/// Note that no action is taken if `min` is less than or equal to the
+	/// current minimum.
+	///
+	/// # Examples
+	///
+	/// ```
+	/// # use rangelist::RangeList;
+	/// let mut r = RangeList::from_iter([-5..=-3, 1..=4, 6..=7]);
+	/// r.tighten_min(2);
+	/// assert_eq!(r.min(), Some(&2));
 	/// assert_eq!(r.iter().collect::<Vec<_>>(), vec![2..=4, 6..=7]);
 	/// ```
-	pub fn set_lower_bound(&mut self, lower_bound: E)
+	pub fn tighten_min(&mut self, min: E)
 	where
 		E: Debug,
 	{
@@ -872,10 +943,10 @@ impl<E: PartialOrd> RangeList<E> {
 			.ranges
 			.iter()
 			.enumerate()
-			.find_map(|(i, (_, end))| (*end >= lower_bound).then_some(i));
+			.find_map(|(i, (_, end))| (*end >= min).then_some(i));
 		if let Some(start) = first_kept {
-			if self.ranges[start].0 < lower_bound {
-				self.ranges[start].0 = lower_bound;
+			if self.ranges[start].0 < min {
+				self.ranges[start].0 = min;
 			}
 			if start > 0 {
 				for i in start..self.ranges.len() {
@@ -888,54 +959,11 @@ impl<E: PartialOrd> RangeList<E> {
 		}
 	}
 
-	/// Tightens the upper bound of the range list, removing any (partial)
-	/// ranges that are above the new upper bound.
-	///
-	/// Note that no action is taken if the new upper bound is greater than or
-	/// equal to the current upper bound.
-	///
-	/// # Examples
-	///
-	/// ```
-	/// # use rangelist::RangeList;
-	/// let mut r = RangeList::from_iter([-5..=-3, 1..=4, 6..=7]);
-	/// r.set_upper_bound(3);
-	/// assert_eq!(r.upper_bound(), Some(&3));
-	/// assert_eq!(r.iter().collect::<Vec<_>>(), vec![-5..=-3, 1..=3]);
-	/// ```
-	pub fn set_upper_bound(&mut self, upper_bound: E) {
-		let last_kept = self
-			.ranges
-			.iter()
-			.enumerate()
-			.rfind(|(_, (start, _))| *start <= upper_bound)
-			.map(|(i, _)| i);
-		if let Some(end) = last_kept {
-			self.ranges.truncate(end + 1);
-			let last = self.ranges.last_mut().unwrap();
-			if last.1 > upper_bound {
-				last.1 = upper_bound;
-			}
-		} else {
-			self.ranges = Vec::new();
-		}
-	}
-
 	/// Returns the upper bound of the range list, or `None` if the range list
-	/// is empty
-	///
-	/// # Examples
-	///
-	/// ```
-	/// # use std::ops::RangeInclusive;
-	/// # use rangelist::RangeList;
-	/// assert_eq!(RangeList::from_iter([1..=4]).upper_bound(), Some(&4));
-	/// assert_eq!(RangeList::from_iter([1..=4, 6..=7, -5..=-3]).upper_bound(), Some(&7));
-	///
-	/// assert_eq!(RangeList::<i64>::default().upper_bound(), None);
-	/// ```
+	/// is empty.
+	#[deprecated(since = "0.5.0", note = "use `max` instead")]
 	pub fn upper_bound(&self) -> Option<&E> {
-		self.ranges.last().map(|(_, end)| end)
+		self.max()
 	}
 }
 
@@ -1272,43 +1300,43 @@ mod tests {
 	#[test]
 	fn test_set_bounds() {
 		let mut empty = RangeList::<i64>::default();
-		empty.set_lower_bound(10);
-		empty.set_upper_bound(20);
-		assert_eq!(empty.lower_bound(), None);
-		assert_eq!(empty.upper_bound(), None);
+		empty.tighten_min(10);
+		empty.tighten_max(20);
+		assert_eq!(empty.min(), None);
+		assert_eq!(empty.max(), None);
 
 		let mut r = RangeList::<i64>::from_iter([1..=2, 4..=6, 8..=9]);
-		r.set_lower_bound(0);
-		assert_eq!(r.lower_bound(), Some(&1));
-		r.set_lower_bound(1);
-		assert_eq!(r.lower_bound(), Some(&1));
-		r.set_lower_bound(2);
-		assert_eq!(r.lower_bound(), Some(&2));
-		r.set_lower_bound(4);
-		assert_eq!(r.lower_bound(), Some(&4));
+		r.tighten_min(0);
+		assert_eq!(r.min(), Some(&1));
+		r.tighten_min(1);
+		assert_eq!(r.min(), Some(&1));
+		r.tighten_min(2);
+		assert_eq!(r.min(), Some(&2));
+		r.tighten_min(4);
+		assert_eq!(r.min(), Some(&4));
 		assert_eq!(r.iter().collect::<Vec<_>>(), vec![4..=6, 8..=9]);
-		r.set_lower_bound(9);
-		assert_eq!(r.lower_bound(), Some(&9));
+		r.tighten_min(9);
+		assert_eq!(r.min(), Some(&9));
 		assert_eq!(r.iter().collect::<Vec<_>>(), vec![9..=9]);
-		r.set_lower_bound(10);
-		assert_eq!(r.lower_bound(), None);
+		r.tighten_min(10);
+		assert_eq!(r.min(), None);
 		assert!(r.is_empty());
 
 		let mut r = RangeList::<i64>::from_iter([1..=2, 4..=6, 8..=9]);
-		r.set_upper_bound(10);
-		assert_eq!(r.upper_bound(), Some(&9));
-		r.set_upper_bound(9);
-		assert_eq!(r.upper_bound(), Some(&9));
-		r.set_upper_bound(8);
-		assert_eq!(r.upper_bound(), Some(&8));
-		r.set_upper_bound(6);
-		assert_eq!(r.upper_bound(), Some(&6));
+		r.tighten_max(10);
+		assert_eq!(r.max(), Some(&9));
+		r.tighten_max(9);
+		assert_eq!(r.max(), Some(&9));
+		r.tighten_max(8);
+		assert_eq!(r.max(), Some(&8));
+		r.tighten_max(6);
+		assert_eq!(r.max(), Some(&6));
 		assert_eq!(r.iter().collect::<Vec<_>>(), vec![1..=2, 4..=6]);
-		r.set_upper_bound(1);
-		assert_eq!(r.upper_bound(), Some(&1));
+		r.tighten_max(1);
+		assert_eq!(r.max(), Some(&1));
 		assert_eq!(r.iter().collect::<Vec<_>>(), vec![1..=1]);
-		r.set_upper_bound(0);
-		assert_eq!(r.upper_bound(), None);
+		r.tighten_max(0);
+		assert_eq!(r.max(), None);
 		assert!(r.is_empty());
 	}
 
