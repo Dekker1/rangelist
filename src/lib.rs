@@ -13,115 +13,16 @@
 //! [`UnionIter`], which are lazy iterator combinators that can be used to
 //! perform set operations on two iterators of ordered ranges.
 
-/// Macro to help with the implementation of [`DiscreteElements`] for the
-/// integer types in the standard library.
-macro_rules! discrete_elems_impls {
-	{
-		narrower than or same width as usize:
-			$( [ $u_narrower:ident $i_narrower:ident ] ),+;
-		wider than usize:
-			$( [ $u_wider:ident $i_wider:ident ] ),+;
-	} => {
-		$(
-			impl DiscreteElement for $u_narrower {
-				#[inline]
-				fn steps_between(start: &Self, end: &Self) -> Option<usize> {
-					if *start <= *end {
-						// This relies on $u_narrower <= usize
-						#[allow(trivial_numeric_casts, reason = "macro is used for many integer types including usize")]
-						Some((*end - *start) as usize)
-					} else {
-						None
-					}
-				}
-
-				#[inline]
-				fn successor(&self) -> Option<Self> {
-					self.checked_add(1)
-				}
-
-				#[inline]
-				fn predecessor(&self) -> Option<Self> {
-					self.checked_sub(1)
-				}
-			}
-
-			impl DiscreteElement for $i_narrower {
-				#[inline]
-				fn steps_between(start: &Self, end: &Self) -> Option<usize> {
-					if *start <= *end {
-						#[allow(trivial_numeric_casts, reason = "macro is used for many integer types including isize")]
-						Some((*end as isize).wrapping_sub(*start as isize) as usize)
-					} else {
-						None
-					}
-				}
-
-				#[inline]
-				fn successor(&self) -> Option<Self> {
-					self.checked_add(1)
-				}
-
-				#[inline]
-				fn predecessor(&self) -> Option<Self> {
-					self.checked_sub(1)
-				}
-			}
-		)+
-
-		$(
-			impl DiscreteElement for $u_wider {
-				#[inline]
-				fn steps_between(start: &Self, end: &Self) -> Option<usize> {
-					if *start <= *end {
-						usize::try_from(*end - *start).ok()
-					} else {
-						None
-					}
-				}
-
-				#[inline]
-				fn successor(&self) -> Option<Self> {
-					self.checked_add(1)
-				}
-
-				#[inline]
-				fn predecessor(&self) -> Option<Self> {
-					self.checked_sub(1)
-				}
-			}
-
-			impl DiscreteElement for $i_wider {
-				#[inline]
-				fn steps_between(start: &Self, end: &Self) -> Option<usize> {
-					if *start <= *end {
-						usize::try_from(end.checked_sub(*start)?).ok()
-					} else {
-						None
-					}
-				}
-
-				#[inline]
-				fn successor(&self) -> Option<Self> {
-					self.checked_add(1)
-				}
-
-				#[inline]
-				fn predecessor(&self) -> Option<Self> {
-					self.checked_sub(1)
-				}
-			}
-		)+
-	};
-}
+mod num_traits;
 
 use std::{
-	any::Any,
 	collections::{BTreeSet, HashSet},
 	fmt::{Debug, Display},
 	iter::{Map, Peekable},
 	ops::{Bound, RangeInclusive},
 };
+
+pub use num_traits::{Adjacent, Step};
 
 /// An iterator combinator that given two iterators yielding ordered ranges,
 /// yields the ordered ranges of elements that are in the ranges yielded by
@@ -129,7 +30,7 @@ use std::{
 /// by the `rhs` iterator.
 #[derive(Debug)]
 pub struct DiffIter<
-	E: Clone + DiscreteElement + PartialOrd,
+	E: Clone + Adjacent + PartialOrd,
 	I: Iterator<Item = RangeInclusive<E>>,
 	J: Iterator<Item = RangeInclusive<E>>,
 > {
@@ -140,36 +41,6 @@ pub struct DiffIter<
 	/// Value to use as the start of the next LHS range, because it was already
 	/// partially yielded.
 	next_min: Option<E>,
-}
-
-/// Trait implemented for type that should be considered discrete elements when
-/// part of a [`RangeList`].
-// Note that the methods in this trait are inspired by the `Step` trait and can
-// be replaced when this is merged into stable Rust.
-pub trait DiscreteElement: Sized {
-	/// Returns the element that would be considered by the *predecessor* of
-	/// `self`, or `None` if it should be considered the smallest possible
-	/// element.
-	fn predecessor(&self) -> Option<Self>;
-
-	/// Returns the number of *steps* between `start` to `end` (inclusive).
-	///
-	/// Returns `None` if the number of steps would overflow `usize`, or cannot
-	/// be determined.
-	///
-	/// # Invariants
-	///
-	/// For any `a`, `b`, and `n`:
-	///
-	/// - `steps_between(&a, &b) == Some(n)` only if `a + n == b`
-	/// - `steps_between(&a, &b) == Some(0)` if and only if `a == b`
-	/// - `steps_between(&a, &b) == None` if `a > b` or `b - a > usize::MAX`
-	fn steps_between(start: &Self, end: &Self) -> Option<usize>;
-
-	/// Returns the element that would be considered by the *successor* of
-	/// `self`, or `None` if it should be considered the largest possible
-	/// element.
-	fn successor(&self) -> Option<Self>;
 }
 
 /// An iterator combinator that given two iterators yielding ordered ranges,
@@ -194,14 +65,14 @@ pub trait IntervalIterator<E: PartialOrd> {
 
 	/// Returns the number of elements contained within the RangeList.
 	///
-	/// Returns `None` if the number of steps would overflow `usize`.
+	/// Returns `None` if the number of elements would overflow `usize`.
 	fn card(&self) -> Option<usize>
 	where
-		E: DiscreteElement,
+		E: Step,
 	{
 		let mut card: usize = 0;
 		for r in self.intervals() {
-			let c = DiscreteElement::steps_between(r.start(), r.end())?;
+			let c = Step::steps_between(r.start(), r.end())?;
 			card = card.checked_add(c)?.checked_add(1)?
 		}
 		Some(card)
@@ -232,7 +103,7 @@ pub trait IntervalIterator<E: PartialOrd> {
 	/// overflow in `E`.
 	fn diff<O, R>(&self, other: &O) -> R
 	where
-		E: Clone + DiscreteElement,
+		E: Clone + Adjacent,
 		O: IntervalIterator<E>,
 		R: FromIterator<RangeInclusive<E>>,
 	{
@@ -384,7 +255,7 @@ impl<E: Clone + Ord> IntervalIterator<E> for BTreeSet<E> {
 	}
 }
 
-impl<E: Clone + DiscreteElement + PartialOrd, I, J> DiffIter<E, I, J>
+impl<E: Clone + Adjacent + PartialOrd, I, J> DiffIter<E, I, J>
 where
 	I: Iterator<Item = RangeInclusive<E>>,
 	J: Iterator<Item = RangeInclusive<E>>,
@@ -409,7 +280,7 @@ where
 	}
 }
 
-impl<E: Clone + DiscreteElement + PartialOrd, I, J> Iterator for DiffIter<E, I, J>
+impl<E: Clone + Adjacent + PartialOrd, I, J> Iterator for DiffIter<E, I, J>
 where
 	I: Iterator<Item = RangeInclusive<E>>,
 	J: Iterator<Item = RangeInclusive<E>>,
@@ -569,7 +440,7 @@ impl<E: PartialOrd> RangeList<E> {
 	/// ```
 	pub fn first_position_bound(&self, bound: &Bound<E>) -> Option<usize>
 	where
-		E: Clone + DiscreteElement,
+		E: Clone + Step,
 	{
 		let elem = match bound {
 			Bound::Included(x) => x,
@@ -585,7 +456,7 @@ impl<E: PartialOrd> RangeList<E> {
 				return Some(pos);
 			}
 			if elem <= end {
-				pos += DiscreteElement::steps_between(start, elem)?;
+				pos += Step::steps_between(start, elem)?;
 				match bound {
 					Bound::Excluded(_) if pos > card => return None,
 					Bound::Excluded(_) => pos += 1,
@@ -594,7 +465,7 @@ impl<E: PartialOrd> RangeList<E> {
 				debug_assert!(pos <= card);
 				return Some(pos);
 			}
-			pos += DiscreteElement::steps_between(start, end)? + 1;
+			pos += Step::steps_between(start, end)? + 1;
 		}
 		debug_assert_eq!(pos, self.card().unwrap());
 		None
@@ -610,7 +481,7 @@ impl<E: PartialOrd> RangeList<E> {
 	/// one yielded previously.
 	pub fn from_sorted_elements<T: IntoIterator<Item = E>>(iter: T) -> Self
 	where
-		E: DiscreteElement + Clone,
+		E: Adjacent + Clone,
 	{
 		let mut it = iter.into_iter();
 		let mut ranges = Vec::new();
@@ -648,7 +519,7 @@ impl<E: PartialOrd> RangeList<E> {
 	/// than the previous one.
 	pub fn from_sorted_ranges<T: IntoIterator<Item = RangeInclusive<E>>>(iter: T) -> Self
 	where
-		E: Any + Clone,
+		E: Adjacent + Clone,
 	{
 		let mut it = iter.into_iter();
 		let mut ranges = Vec::new();
@@ -660,38 +531,12 @@ impl<E: PartialOrd> RangeList<E> {
 				panic!("ranges must be yielded in sorted order");
 			}
 			let next = (next.start().clone(), next.end().clone());
-			// Determine distance between the two ranges if the elements are discrete.
-			let inbetween: &dyn Any = &(cur.1.clone(), next.0.clone());
-			let dist = if let Some((cur_end, next_start)) = inbetween.downcast_ref::<(isize, _)>() {
-				DiscreteElement::steps_between(cur_end, next_start)
-			} else if let Some((cur_end, next_start)) = inbetween.downcast_ref::<(i128, _)>() {
-				DiscreteElement::steps_between(cur_end, next_start)
-			} else if let Some((cur_end, next_start)) = inbetween.downcast_ref::<(i64, _)>() {
-				DiscreteElement::steps_between(cur_end, next_start)
-			} else if let Some((cur_end, next_start)) = inbetween.downcast_ref::<(i32, _)>() {
-				DiscreteElement::steps_between(cur_end, next_start)
-			} else if let Some((cur_end, next_start)) = inbetween.downcast_ref::<(i16, _)>() {
-				DiscreteElement::steps_between(cur_end, next_start)
-			} else if let Some((cur_end, next_start)) = inbetween.downcast_ref::<(i8, _)>() {
-				DiscreteElement::steps_between(cur_end, next_start)
-			} else if let Some((cur_end, next_start)) = inbetween.downcast_ref::<(usize, _)>() {
-				DiscreteElement::steps_between(cur_end, next_start)
-			} else if let Some((cur_end, next_start)) = inbetween.downcast_ref::<(u128, _)>() {
-				DiscreteElement::steps_between(cur_end, next_start)
-			} else if let Some((cur_end, next_start)) = inbetween.downcast_ref::<(u64, _)>() {
-				DiscreteElement::steps_between(cur_end, next_start)
-			} else if let Some((cur_end, next_start)) = inbetween.downcast_ref::<(u32, _)>() {
-				DiscreteElement::steps_between(cur_end, next_start)
-			} else if let Some((cur_end, next_start)) = inbetween.downcast_ref::<(u16, _)>() {
-				DiscreteElement::steps_between(cur_end, next_start)
-			} else if let Some((cur_end, next_start)) = inbetween.downcast_ref::<(u8, _)>() {
-				DiscreteElement::steps_between(cur_end, next_start)
-			} else {
-				None
-			};
-
-			if cur.1 >= next.0 || dist.unwrap_or(usize::MAX) <= 1 {
-				cur.1 = next.1
+			// Merge the ranges if they overlap, or if they are adjacent (the
+			// successor of the current end reaches the start of the next range).
+			let adjacent = cur.1.successor().is_some_and(|succ| next.0 <= succ);
+			if cur.1 >= next.0 || adjacent {
+				// `next` may be fully contained in `cur`, so keep the larger end.
+				cur.1 = max(cur.1, next.1)
 			} else {
 				ranges.push(cur);
 				cur = next;
@@ -762,7 +607,7 @@ impl<E: PartialOrd> RangeList<E> {
 	/// ```
 	pub fn last_position_bound(&self, bound: &Bound<E>) -> Option<usize>
 	where
-		E: Clone + DiscreteElement,
+		E: Clone + Step,
 	{
 		let mut pos = self.card()?;
 		let lb = self.min()?;
@@ -788,13 +633,13 @@ impl<E: PartialOrd> RangeList<E> {
 				return Some(pos);
 			}
 			if elem >= start {
-				pos -= DiscreteElement::steps_between(elem, end)? + 1;
+				pos -= Step::steps_between(elem, end)? + 1;
 				if matches!(bound, Bound::Excluded(_)) {
 					pos -= 1;
 				}
 				return Some(pos);
 			}
-			pos -= DiscreteElement::steps_between(start, end)? + 1;
+			pos -= Step::steps_between(start, end)? + 1;
 		}
 		unreachable!()
 	}
@@ -854,7 +699,7 @@ impl<E: PartialOrd> RangeList<E> {
 	/// ```
 	pub fn position(&self, elem: &E) -> Option<usize>
 	where
-		E: DiscreteElement,
+		E: Step,
 	{
 		let mut pos = 0;
 		for (start, end) in &self.ranges {
@@ -862,10 +707,10 @@ impl<E: PartialOrd> RangeList<E> {
 				return None;
 			}
 			if elem <= end {
-				let elems = DiscreteElement::steps_between(start, elem)?;
+				let elems = Step::steps_between(start, elem)?;
 				return Some(pos + elems);
 			}
-			pos += DiscreteElement::steps_between(start, end)? + 1;
+			pos += Step::steps_between(start, end)? + 1;
 		}
 		None
 	}
@@ -1037,7 +882,7 @@ impl<E: Clone + PartialOrd> From<RangeInclusive<E>> for RangeList<E> {
 
 impl<E, R> FromIterator<R> for RangeList<E>
 where
-	E: Any + Clone + PartialOrd,
+	E: Adjacent + Clone + PartialOrd,
 	R: Into<RangeInclusive<E>>,
 {
 	fn from_iter<T: IntoIterator<Item = R>>(iter: T) -> Self {
@@ -1168,24 +1013,6 @@ where
 	}
 }
 
-#[cfg(target_pointer_width = "64")]
-discrete_elems_impls! {
-	narrower than or same width as usize: [u8 i8], [u16 i16], [u32 i32], [u64 i64], [usize isize];
-	wider than usize: [u128 i128];
-}
-
-#[cfg(target_pointer_width = "32")]
-discrete_elems_impls! {
-	narrower than or same width as usize: [u8 i8], [u16 i16], [u32 i32], [usize isize];
-	wider than usize: [u64 i64], [u128 i128];
-}
-
-#[cfg(target_pointer_width = "16")]
-discrete_elems_impls! {
-	narrower than or same width as usize: [u8 i8], [u16 i16], [usize isize];
-	wider than usize: [u32 i32], [u64 i64], [u128 i128];
-}
-
 #[cfg(test)]
 mod tests {
 	use expect_test::expect;
@@ -1242,9 +1069,34 @@ mod tests {
 		let expected3 = RangeList::from_iter([0.1..=4.0]);
 		assert_eq!(rl3, expected3);
 
+		// Regression test: a later range fully contained in the current one must
+		// not shrink the accumulated range.
+		let rl4 = RangeList::from_sorted_ranges([1..=10, 2..=3]);
+		let expected4 = RangeList::from_iter([1..=10]);
+		assert_eq!(rl4, expected4);
+		let rl5 = RangeList::from_sorted_ranges([0.0..=10.0, 2.0..=3.0]);
+		let expected5 = RangeList::from_iter([0.0..=10.0]);
+		assert_eq!(rl5, expected5);
+
 		// Empty iterator returns empty/default RangeList.
 		let rl_empty: RangeList<f64> = RangeList::from_sorted_ranges([]);
 		assert!(rl_empty.is_empty());
+	}
+
+	#[test]
+	fn test_position_overflow() {
+		// A full-width range has more elements than `usize` can count, so its
+		// cardinality overflows, but positions within it (which are distances)
+		// must still be reported.
+		let full = RangeList::from(0_u64..=u64::MAX);
+		assert_eq!(full.card(), None);
+		assert_eq!(full.position(&0), Some(0));
+		assert_eq!(full.position(&u64::MAX), Some(usize::MAX));
+
+		let signed = RangeList::from(i64::MIN..=i64::MAX);
+		assert_eq!(signed.card(), None);
+		assert_eq!(signed.position(&i64::MIN), Some(0));
+		assert_eq!(signed.position(&i64::MAX), Some(usize::MAX));
 	}
 
 	#[test]
@@ -1397,6 +1249,14 @@ mod tests {
 		let x = RangeList::from_iter([3..=4, 6..=9, 11..=12, 14..=14, 16..=16]);
 		let z: RangeList<_> = x.diff(&RangeList::from_iter([1..=1, 3..=3, 12..=14]));
 		expect!["4..4 union 6..9 union 11..11 union 16..16"].assert_eq(&z.to_string());
+
+		// Floats cut at the next/previous representable value.
+		let x = RangeList::from(1.0..=5.0);
+		let z: RangeList<f64> = x.diff(&RangeList::from(2.0..=4.0));
+		assert_eq!(
+			z.iter().collect::<Vec<_>>(),
+			vec![1.0..=2.0_f64.next_down(), 4.0_f64.next_up()..=5.0]
+		);
 	}
 
 	#[test]
