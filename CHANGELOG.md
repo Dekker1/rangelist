@@ -5,7 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.4.0] - 2025-11-06
+## [0.5.0](https://github.com/Dekker1/rangelist/compare/v0.4.0...v0.5.0) - 2026-05-29
+
+### Added
+
+- add `from_elements` constructor for `RangeList`
+- [**breaking**] split `DiscreteElement` into `Adjacent` and `Step`
+- allow `diff` operations for floating point `RangeList`.
+- add `min`, `max`, `tighten_min`, and `tighten_max` methods, deprecating `lower_bound`, `upper_bound`, `set_lower_bound`, and `set_upper_bound` in favour of these new methods.
+
+### Other
+
+- update crate to be in its own repository
+
+## [0.4.0](https://github.com/Dekker1/rangelist/compare/v0.3.2...v0.4.0) - 2025-11-06
 
 ### Added
 
@@ -20,21 +33,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   discrete steps between two elements, or `None` if that number overflows
   `usize`.
 
-## [0.3.2] - 2025-09-25
+## [0.3.2](https://github.com/Dekker1/rangelist/compare/v0.3.1...v0.3.2) - 2025-09-25
 
 ### Added
 
 - Add `RangeList::set_lower_bound` and `RangeList::set_upper_bound` methods to
   tighten the lower and upper bounds of a `RangeList`.
 
-## [0.3.1] - 2025-08-13
+## [0.3.1](https://github.com/Dekker1/rangelist/compare/v0.3.0...v0.3.1) - 2025-08-13
 
 ### Fixed
 
 - Fix a regression where `DiffIter` did not always correctly handle when two lhs
   ranges must be cut by the same rhs range.
 
-## [0.3.0] - 2025-08-12
+## [0.3.0](https://github.com/Dekker1/rangelist/compare/v0.2.0...v0.3.0) - 2025-08-12
 
 ### Added
 
@@ -51,7 +64,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `RangeList::card` now returns an `Option<usize>` and is marked `None` when the
   cardinality overflows `usize`.
 
-## [0.2.0] - 2023-08-12
+## [0.2.0](https://github.com/Dekker1/rangelist/compare/v0.1.0...v0.2.0) - 2023-08-12
 
 ### Changed
 
@@ -71,7 +84,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add `DiffIter`, `IntersectIter`, and `UnionIter` to provide lazy evaluation of
   set operations.
 
-## [0.1.0] - 2024-07-05
+## [0.1.0](https://github.com/Dekker1/rangelist/releases/tag/v0.1.0) - 2024-07-05
 
 ### Added
 
@@ -80,10 +93,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   intervals and implement it for `RangeList`.
 - Add set operations `card`, `disjoint`, `intersect`, `subset`, `superset`,
   `union` for implementers of `IntervalIter`.
-
-[unreleased]: https://github.com/shackle-rs/shackle/releases/compare/rangelist-v0.3.2......HEAD
-[0.3.2]: https://github.com/shackle-rs/shackle/releases/compare/rangelist-v0.3.1...rangelist-v0.3.2
-[0.3.1]: https://github.com/shackle-rs/shackle/releases/compare/rangelist-v0.3.0...rangelist-v0.3.1
-[0.3.0]: https://github.com/shackle-rs/shackle/releases/compare/rangelist-v0.2.0...rangelist-v0.3.0
-[0.2.0]: https://github.com/shackle-rs/shackle/releases/compare/rangelist-v0.1.0...rangelist-v0.2.0
-[0.1.0]: https://github.com/shackle-rs/shackle/releases/tag/rangelist-v0.1.0
