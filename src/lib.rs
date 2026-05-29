@@ -471,6 +471,25 @@ impl<E: PartialOrd> RangeList<E> {
 		None
 	}
 
+	/// Construct a [`RangeList`] from an iterator of elements in any order,
+	/// collapsing them into the minimal set of inclusive ranges.
+	///
+	/// # Warning
+	///
+	/// This function will panic if any of the elements cannot be sorted (e.g.,
+	/// `NaN` for floating point types).
+	pub fn from_elements<T: IntoIterator<Item = E>>(iter: T) -> Self
+	where
+		E: Adjacent + Clone,
+	{
+		let mut elems: Vec<E> = iter.into_iter().collect();
+		elems.sort_by(|a, b| {
+			a.partial_cmp(b)
+				.expect("the order of the elements in the RangeList cannot be partial")
+		});
+		Self::from_sorted_elements(elems)
+	}
+
 	/// Construct a [`RangeList`] from an iterator of elements that are known to
 	/// be yielded in sorted (increasing) order, but where duplicates might
 	/// still exist.
@@ -1032,6 +1051,24 @@ mod tests {
 
 		let float_range = RangeList::from_iter([0.1..=3.2, 8.1..=50.0]);
 		assert_eq!(float_range.to_string(), "0.1..3.2 union 8.1..50.0");
+	}
+
+	#[test]
+	fn test_from_elements() {
+		// Unsorted elements (with duplicates) should be collapsed into ranges.
+		let elems = [5_u32, 1, 4, 2, 1, 6];
+		let rl = RangeList::from_elements(elems);
+		let expected = RangeList::from_iter([1_u32..=2, 4..=6]);
+		assert_eq!(rl, expected);
+
+		// Signed values are handled correctly.
+		let rl2 = RangeList::from_elements([3_i64, -2, -1, 3, 0]);
+		let expected2 = RangeList::from_iter([-2_i64..=0, 3..=3]);
+		assert_eq!(rl2, expected2);
+
+		// Empty iterator yields empty/default RangeList.
+		let rl_empty: RangeList<u32> = RangeList::from_elements([]);
+		assert!(rl_empty.is_empty());
 	}
 
 	#[test]
