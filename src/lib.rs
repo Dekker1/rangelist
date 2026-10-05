@@ -112,7 +112,7 @@ pub trait IntervalIterator<E: PartialOrd> {
 		O: IntervalIterator<E>,
 		R: FromIterator<RangeInclusive<E>>,
 	{
-		DiffIter::from_iters(self.intervals(), other.intervals()).collect()
+		DiffIter::new(self, other).collect()
 	}
 
 	/// Returns whether `self` and `other` are disjoint sets
@@ -142,7 +142,7 @@ pub trait IntervalIterator<E: PartialOrd> {
 		O: IntervalIterator<E>,
 		R: FromIterator<RangeInclusive<E>>,
 	{
-		IntersectIter::from_iters(self.intervals(), other.intervals()).collect()
+		IntersectIter::new(self, other).collect()
 	}
 	/// Returns an iterator over the ordered intervals.
 	fn intervals(&self) -> Self::IntervalIter<'_>;
@@ -183,7 +183,7 @@ pub trait IntervalIterator<E: PartialOrd> {
 		O: IntervalIterator<E>,
 		R: FromIterator<RangeInclusive<E>>,
 	{
-		UnionIter::from_iters(self.intervals(), other.intervals()).collect()
+		UnionIter::new(self, other).collect()
 	}
 }
 
@@ -311,8 +311,8 @@ where
 	/// [`IntervalIterator`] trait.
 	pub fn new<'a, A, B>(lhs: &'a A, rhs: &'a B) -> Self
 	where
-		A: IntervalIterator<E, IntervalIter<'a> = I>,
-		B: IntervalIterator<E, IntervalIter<'a> = J>,
+		A: IntervalIterator<E, IntervalIter<'a> = I> + ?Sized,
+		B: IntervalIterator<E, IntervalIter<'a> = J> + ?Sized,
 	{
 		Self::from_iters(lhs.intervals(), rhs.intervals())
 	}
@@ -423,8 +423,8 @@ where
 	/// [`IntervalIterator`] trait.
 	pub fn new<'a, A, B>(lhs: &'a A, rhs: &'a B) -> Self
 	where
-		A: IntervalIterator<E, IntervalIter<'a> = I>,
-		B: IntervalIterator<E, IntervalIter<'a> = J>,
+		A: IntervalIterator<E, IntervalIter<'a> = I> + ?Sized,
+		B: IntervalIterator<E, IntervalIter<'a> = J> + ?Sized,
 	{
 		Self::from_iters(lhs.intervals(), rhs.intervals())
 	}
@@ -1065,8 +1065,8 @@ where
 	/// [`IntervalIterator`] trait.
 	pub fn new<'a, A, B>(lhs: &'a A, rhs: &'a B) -> Self
 	where
-		A: IntervalIterator<E, IntervalIter<'a> = I>,
-		B: IntervalIterator<E, IntervalIter<'a> = J>,
+		A: IntervalIterator<E, IntervalIter<'a> = I> + ?Sized,
+		B: IntervalIterator<E, IntervalIter<'a> = J> + ?Sized,
 	{
 		Self::from_iters(lhs.intervals(), rhs.intervals())
 	}
