@@ -62,7 +62,9 @@ pub struct IntersectIter<
 /// A trait that provides operations on iterators of ordered intervals.
 pub trait IntervalIterator<E: PartialOrd> {
 	/// The type of the interval iterator.
-	type IntervalIter: Iterator<Item = RangeInclusive<E>>;
+	type IntervalIter<'a>: Iterator<Item = RangeInclusive<E>>
+	where
+		Self: 'a;
 
 	/// Returns the number of elements contained within the RangeList.
 	///
@@ -143,7 +145,7 @@ pub trait IntervalIterator<E: PartialOrd> {
 		IntersectIter::from_iters(self.intervals(), other.intervals()).collect()
 	}
 	/// Returns an iterator over the ordered intervals.
-	fn intervals(&self) -> Self::IntervalIter;
+	fn intervals(&self) -> Self::IntervalIter<'_>;
 
 	/// Returns whether `self` is a subset of `other`
 	fn subset<O: IntervalIterator<E> + ?Sized>(&self, other: &O) -> bool {
@@ -183,6 +185,14 @@ pub trait IntervalIterator<E: PartialOrd> {
 	{
 		UnionIter::from_iters(self.intervals(), other.intervals()).collect()
 	}
+}
+
+/// An iterator over clones of the ranges of a [`RangeList`], as returned by
+/// [`IntervalIterator::intervals`].
+#[derive(Debug, Clone)]
+pub struct Intervals<'a, E> {
+	/// Iterator over the stored ranges
+	iter: std::slice::Iter<'a, (E, E)>,
 }
 
 /// A sorted collection of inclusive ranges that can be used to represent
@@ -262,7 +272,10 @@ fn overlap<E: PartialOrd>(r1: &RangeInclusive<E>, r2: &RangeInclusive<E>) -> Ran
 }
 
 impl<E: Clone + Ord> IntervalIterator<E> for BTreeSet<E> {
-	type IntervalIter = Map<<BTreeSet<E> as IntoIterator>::IntoIter, fn(E) -> RangeInclusive<E>>;
+	type IntervalIter<'a>
+		= Map<std::collections::btree_set::Iter<'a, E>, fn(&'a E) -> RangeInclusive<E>>
+	where
+		Self: 'a;
 
 	fn card(&self) -> Option<usize>
 	where
@@ -275,8 +288,8 @@ impl<E: Clone + Ord> IntervalIterator<E> for BTreeSet<E> {
 		BTreeSet::contains(self, elem)
 	}
 
-	fn intervals(&self) -> Self::IntervalIter {
-		self.clone().into_iter().map(|e| e.clone()..=e)
+	fn intervals(&self) -> Self::IntervalIter<'_> {
+		self.iter().map(|e| e.clone()..=e.clone())
 	}
 }
 
@@ -296,10 +309,10 @@ where
 
 	/// Create a new [`DiffIter`] from two set types that implement the
 	/// [`IntervalIterator`] trait.
-	pub fn new<A, B>(lhs: &A, rhs: &B) -> Self
+	pub fn new<'a, A, B>(lhs: &'a A, rhs: &'a B) -> Self
 	where
-		A: IntervalIterator<E, IntervalIter = I>,
-		B: IntervalIterator<E, IntervalIter = J>,
+		A: IntervalIterator<E, IntervalIter<'a> = I>,
+		B: IntervalIterator<E, IntervalIter<'a> = J>,
 	{
 		Self::from_iters(lhs.intervals(), rhs.intervals())
 	}
@@ -369,7 +382,10 @@ where
 }
 
 impl<E: Clone + Hash + Ord> IntervalIterator<E> for HashSet<E> {
-	type IntervalIter = Map<<Vec<E> as IntoIterator>::IntoIter, fn(E) -> RangeInclusive<E>>;
+	type IntervalIter<'a>
+		= Map<<Vec<E> as IntoIterator>::IntoIter, fn(E) -> RangeInclusive<E>>
+	where
+		Self: 'a;
 
 	fn card(&self) -> Option<usize>
 	where
@@ -382,7 +398,7 @@ impl<E: Clone + Hash + Ord> IntervalIterator<E> for HashSet<E> {
 		HashSet::contains(self, elem)
 	}
 
-	fn intervals(&self) -> Self::IntervalIter {
+	fn intervals(&self) -> Self::IntervalIter<'_> {
 		let mut v: Vec<_> = self.iter().cloned().collect();
 		v.sort_unstable();
 		v.into_iter().map(|e| e.clone()..=e)
@@ -405,10 +421,10 @@ where
 
 	/// Create a new [`IntersectIter`] from two set types that implement the
 	/// [`IntervalIterator`] trait.
-	pub fn new<A, B>(lhs: &A, rhs: &B) -> Self
+	pub fn new<'a, A, B>(lhs: &'a A, rhs: &'a B) -> Self
 	where
-		A: IntervalIterator<E, IntervalIter = I>,
-		B: IntervalIterator<E, IntervalIter = J>,
+		A: IntervalIterator<E, IntervalIter<'a> = I>,
+		B: IntervalIterator<E, IntervalIter<'a> = J>,
 	{
 		Self::from_iters(lhs.intervals(), rhs.intervals())
 	}
@@ -442,6 +458,22 @@ where
 			}
 		}
 		None
+	}
+}
+
+impl<E: Clone> Iterator for Intervals<'_, E> {
+	type Item = RangeInclusive<E>;
+
+	#[inline]
+	fn next(&mut self) -> Option<Self::Item> {
+		self.iter
+			.next()
+			.map(|(start, end)| start.clone()..=end.clone())
+	}
+
+	#[inline]
+	fn size_hint(&self) -> (usize, Option<usize>) {
+		self.iter.size_hint()
 	}
 }
 
@@ -971,7 +1003,10 @@ where
 }
 
 impl<E: PartialOrd + Clone> IntervalIterator<E> for RangeList<E> {
-	type IntervalIter = <RangeList<E> as IntoIterator>::IntoIter;
+	type IntervalIter<'a>
+		= Intervals<'a, E>
+	where
+		Self: 'a;
 
 	fn card(&self) -> Option<usize>
 	where
@@ -984,8 +1019,10 @@ impl<E: PartialOrd + Clone> IntervalIterator<E> for RangeList<E> {
 		RangeList::contains(self, elem)
 	}
 
-	fn intervals(&self) -> Self::IntervalIter {
-		self.clone().into_iter()
+	fn intervals(&self) -> Self::IntervalIter<'_> {
+		Intervals {
+			iter: self.ranges.iter(),
+		}
 	}
 }
 
@@ -1026,10 +1063,10 @@ where
 
 	/// Create a new [`UnionIter`] from two set types that implement the
 	/// [`IntervalIterator`] trait.
-	pub fn new<A, B>(lhs: &A, rhs: &B) -> Self
+	pub fn new<'a, A, B>(lhs: &'a A, rhs: &'a B) -> Self
 	where
-		A: IntervalIterator<E, IntervalIter = I>,
-		B: IntervalIterator<E, IntervalIter = J>,
+		A: IntervalIterator<E, IntervalIter<'a> = I>,
+		B: IntervalIterator<E, IntervalIter<'a> = J>,
 	{
 		Self::from_iters(lhs.intervals(), rhs.intervals())
 	}
