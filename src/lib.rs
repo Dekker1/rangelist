@@ -746,10 +746,7 @@ impl<E: PartialOrd> RangeList<E> {
 	/// Tightens the lower bound of the range list, removing any (partial)
 	/// ranges that are below the new lower bound.
 	#[deprecated(since = "0.5.0", note = "use `tighten_min` instead")]
-	pub fn set_lower_bound(&mut self, lower_bound: E)
-	where
-		E: Debug,
-	{
+	pub fn set_lower_bound(&mut self, lower_bound: E) {
 		self.tighten_min(lower_bound)
 	}
 
@@ -776,12 +773,7 @@ impl<E: PartialOrd> RangeList<E> {
 	/// assert_eq!(r.iter().collect::<Vec<_>>(), vec![-5..=-3, 1..=3]);
 	/// ```
 	pub fn tighten_max(&mut self, max: E) {
-		let last_kept = self
-			.ranges
-			.iter()
-			.enumerate()
-			.rfind(|(_, (start, _))| *start <= max)
-			.map(|(i, _)| i);
+		let last_kept = self.ranges.iter().rposition(|(start, _)| *start <= max);
 		if let Some(end) = last_kept {
 			self.ranges.truncate(end + 1);
 			let last = self.ranges.last_mut().unwrap();
@@ -808,24 +800,12 @@ impl<E: PartialOrd> RangeList<E> {
 	/// assert_eq!(r.min(), Some(&2));
 	/// assert_eq!(r.iter().collect::<Vec<_>>(), vec![2..=4, 6..=7]);
 	/// ```
-	pub fn tighten_min(&mut self, min: E)
-	where
-		E: Debug,
-	{
-		let first_kept = self
-			.ranges
-			.iter()
-			.enumerate()
-			.find_map(|(i, (_, end))| (*end >= min).then_some(i));
+	pub fn tighten_min(&mut self, min: E) {
+		let first_kept = self.ranges.iter().position(|(_, end)| *end >= min);
 		if let Some(start) = first_kept {
-			if self.ranges[start].0 < min {
-				self.ranges[start].0 = min;
-			}
-			if start > 0 {
-				for i in start..self.ranges.len() {
-					self.ranges.swap(i, i - start);
-				}
-				self.ranges.truncate(self.ranges.len() - start);
+			let _ = self.ranges.drain(..start);
+			if self.ranges[0].0 < min {
+				self.ranges[0].0 = min;
 			}
 		} else {
 			self.ranges = Vec::new();
