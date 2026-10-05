@@ -892,19 +892,19 @@ impl<E: Debug + PartialOrd> Display for RangeList<E> {
 
 impl<E: Clone + PartialOrd> From<&RangeInclusive<E>> for RangeList<E> {
 	fn from(value: &RangeInclusive<E>) -> Self {
-		if value.is_empty() {
-			RangeList { ranges: Vec::new() }
-		} else {
-			Self {
-				ranges: vec![(value.start().clone(), value.end().clone())],
-			}
-		}
+		value.clone().into()
 	}
 }
 
-impl<E: Clone + PartialOrd> From<RangeInclusive<E>> for RangeList<E> {
+impl<E: PartialOrd> From<RangeInclusive<E>> for RangeList<E> {
 	fn from(value: RangeInclusive<E>) -> Self {
-		(&value).into()
+		if value.is_empty() {
+			Self::default()
+		} else {
+			Self {
+				ranges: vec![value.into_inner()],
+			}
+		}
 	}
 }
 
@@ -955,7 +955,7 @@ impl<E: PartialOrd + Clone> IntervalIterator<E> for RangeList<E> {
 	}
 }
 
-impl<E: PartialOrd + Clone> IntoIterator for RangeList<E> {
+impl<E: PartialOrd> IntoIterator for RangeList<E> {
 	type IntoIter = Map<std::vec::IntoIter<(E, E)>, fn((E, E)) -> RangeInclusive<E>>;
 	type Item = RangeInclusive<E>;
 
