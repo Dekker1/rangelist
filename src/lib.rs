@@ -1118,7 +1118,7 @@ mod tests {
 		let empty: RangeList<i64> = RangeList::default();
 		assert_eq!(empty.to_string(), "1..0");
 
-		let single_range = RangeList::from_iter([1..=4]);
+		let single_range = RangeList::from(1..=4);
 		assert_eq!(single_range.to_string(), "1..4");
 
 		let multi_range = RangeList::from_iter([1..=4, 6..=7, -5..=-3]);
@@ -1156,7 +1156,7 @@ mod tests {
 
 		// Single element produces a single 1-length range.
 		let rl2 = RangeList::from_sorted_elements([10_u8]);
-		let expected2 = RangeList::from_iter([10_u8..=10]);
+		let expected2 = RangeList::from(10_u8..=10);
 		assert_eq!(rl2, expected2);
 
 		// Empty iterator yields empty/default RangeList.
@@ -1184,7 +1184,7 @@ mod tests {
 		// Regression test: a later range fully contained in the current one
 		// must not shrink the accumulated range.
 		let rl4 = RangeList::from_sorted_ranges([1..=10, 2..=3]);
-		let expected4 = RangeList::from_iter([1..=10]);
+		let expected4 = RangeList::from(1..=10);
 		assert_eq!(rl4, expected4);
 		let rl5 = RangeList::from_sorted_ranges([0.0..=10.0, 2.0..=3.0]);
 		let expected5 = RangeList::from_iter([0.0..=10.0]);
@@ -1268,6 +1268,10 @@ mod tests {
 		.assert_debug_eq(&empty);
 		assert!(empty.is_empty());
 
+		#[expect(
+			clippy::single_range_in_vec_init,
+			reason = "a single range is collected on purpose"
+		)]
 		let single_range = RangeList::from_iter([1..=4]);
 		expect![[r#"
 		RangeList::from(1..=4)
@@ -1374,7 +1378,7 @@ mod tests {
 	#[test]
 	fn test_set_diff() {
 		let empty: RangeList<i64> = RangeList::default();
-		let inf: RangeList<i64> = RangeList::from_iter([i64::MIN..=i64::MAX]);
+		let inf: RangeList<i64> = RangeList::from(i64::MIN..=i64::MAX);
 		let res: RangeList<_> = empty.diff(&empty);
 		assert_eq!(res, empty);
 		let res: RangeList<_> = inf.diff(&inf);
@@ -1449,7 +1453,7 @@ mod tests {
 	#[test]
 	fn test_set_intersect() {
 		let empty = RangeList::default();
-		let inf = RangeList::from_iter([i64::MIN..=i64::MAX]);
+		let inf = RangeList::from(i64::MIN..=i64::MAX);
 		let res: RangeList<_> = empty.intersect(&empty);
 		assert_eq!(res, empty);
 		let res: RangeList<_> = inf.intersect(&inf);
@@ -1511,7 +1515,7 @@ mod tests {
 	#[test]
 	fn test_set_union() {
 		let empty: RangeList<i64> = RangeList::default();
-		let inf: RangeList<i64> = RangeList::from_iter([i64::MIN..=i64::MAX]);
+		let inf: RangeList<i64> = RangeList::from(i64::MIN..=i64::MAX);
 		let res: RangeList<_> = empty.union(&empty);
 		assert_eq!(res, empty);
 		let res: RangeList<_> = inf.union(&inf);
