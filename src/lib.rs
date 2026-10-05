@@ -149,8 +149,9 @@ pub trait IntervalIterator<E: PartialOrd> {
 		while let (Some(l), Some(r)) = (lhs.peek(), rhs.peek()) {
 			match overlap(l, r) {
 				RangeOrdering::Overlap if r.start() <= l.start() && l.end() <= r.end() => {
-					// Current "self range" is included in the current other range
-					// Move to next "self range" that needs to be covered
+					// Current "self range" is included in the current other
+					// range Move to next "self range" that
+					// needs to be covered
 					let _ = lhs.next();
 				}
 				RangeOrdering::Greater => {
@@ -551,10 +552,12 @@ impl<E: PartialOrd> RangeList<E> {
 			}
 			let next = (next.start().clone(), next.end().clone());
 			// Merge the ranges if they overlap, or if they are adjacent (the
-			// successor of the current end reaches the start of the next range).
+			// successor of the current end reaches the start of the next
+			// range).
 			let adjacent = cur.1.successor().is_some_and(|succ| next.0 <= succ);
 			if cur.1 >= next.0 || adjacent {
-				// `next` may be fully contained in `cur`, so keep the larger end.
+				// `next` may be fully contained in `cur`, so keep the larger
+				// end.
 				cur.1 = max(cur.1, next.1)
 			} else {
 				ranges.push(cur);
@@ -1106,8 +1109,8 @@ mod tests {
 		let expected3 = RangeList::from_iter([0.1..=4.0]);
 		assert_eq!(rl3, expected3);
 
-		// Regression test: a later range fully contained in the current one must
-		// not shrink the accumulated range.
+		// Regression test: a later range fully contained in the current one
+		// must not shrink the accumulated range.
 		let rl4 = RangeList::from_sorted_ranges([1..=10, 2..=3]);
 		let expected4 = RangeList::from_iter([1..=10]);
 		assert_eq!(rl4, expected4);
