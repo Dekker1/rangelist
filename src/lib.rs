@@ -19,7 +19,7 @@ use std::{
 	collections::{BTreeSet, HashSet},
 	fmt::{Debug, Display},
 	hash::Hash,
-	iter::{Fuse, Map, Peekable},
+	iter::{Fuse, FusedIterator, Map, Peekable},
 	ops::{Bound, RangeInclusive},
 };
 
@@ -188,7 +188,7 @@ pub trait IntervalIterator<E: PartialOrd> {
 }
 
 /// An iterator over clones of the ranges of a [`RangeList`], as returned by
-/// [`IntervalIterator::intervals`].
+/// [`RangeList::iter`] and [`IntervalIterator::intervals`].
 #[derive(Debug, Clone)]
 pub struct Intervals<'a, E> {
 	/// Iterator over the stored ranges
@@ -461,6 +461,19 @@ where
 	}
 }
 
+impl<E: Clone> DoubleEndedIterator for Intervals<'_, E> {
+	#[inline]
+	fn next_back(&mut self) -> Option<Self::Item> {
+		self.iter
+			.next_back()
+			.map(|(start, end)| start.clone()..=end.clone())
+	}
+}
+
+impl<E: Clone> ExactSizeIterator for Intervals<'_, E> {}
+
+impl<E: Clone> FusedIterator for Intervals<'_, E> {}
+
 impl<E: Clone> Iterator for Intervals<'_, E> {
 	type Item = RangeInclusive<E>;
 
@@ -670,21 +683,23 @@ impl<E: PartialOrd> RangeList<E> {
 		self.ranges.is_empty()
 	}
 
-	/// Returns an Copying iterator for the ranges in the set.
-	#[allow(
-		clippy::type_complexity,
-		reason = "type is less understandable if split up"
-	)]
-	pub fn iter<'a>(
-		&'a self,
-	) -> Map<
-		<&'a RangeList<E> as IntoIterator>::IntoIter,
-		fn(RangeInclusive<&'a E>) -> RangeInclusive<E>,
-	>
+	/// Returns an iterator over clones of the ranges in the set.
+	///
+	/// # Examples
+	///
+	/// ```
+	/// # use rangelist::RangeList;
+	/// let rl = RangeList::from_iter([1..=4, 6..=7]);
+	/// assert_eq!(rl.iter().len(), 2);
+	/// assert_eq!(rl.iter().rev().collect::<Vec<_>>(), vec![6..=7, 1..=4]);
+	/// ```
+	pub fn iter(&self) -> Intervals<'_, E>
 	where
-		E: Copy,
+		E: Clone,
 	{
-		self.into_iter().map(|r| **r.start()..=**r.end())
+		Intervals {
+			iter: self.ranges.iter(),
+		}
 	}
 
 	/// Returns the position of the gap after the largest element smaller than
@@ -1020,9 +1035,7 @@ impl<E: PartialOrd + Clone> IntervalIterator<E> for RangeList<E> {
 	}
 
 	fn intervals(&self) -> Self::IntervalIter<'_> {
-		Intervals {
-			iter: self.ranges.iter(),
-		}
+		self.iter()
 	}
 }
 
@@ -1559,6 +1572,7 @@ mod tests {
 		let b = BTreeSet::from([1, 2, 3, 7]);
 		let h = HashSet::from([7, 3, 2, 1]);
 		let rl = RangeList::from_iter([1..=3, 7..=7]);
+		assert_eq!(rl.intervals().len(), 2);
 		assert_eq!(IntervalIterator::card(&b), Some(4));
 		assert_eq!(IntervalIterator::card(&h), Some(4));
 		assert!(IntervalIterator::contains(&b, &7) && !IntervalIterator::contains(&b, &4));
