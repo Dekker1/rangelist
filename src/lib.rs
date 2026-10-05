@@ -58,7 +58,7 @@ pub struct IntersectIter<
 	rhs: Peekable<J>,
 }
 
-/// A trait that provides operations on iterators of orderdered intervals.
+/// A trait that provides operations on iterators of ordered intervals.
 pub trait IntervalIterator<E: PartialOrd> {
 	/// The type of the interval iterator.
 	type IntervalIter: Iterator<Item = RangeInclusive<E>>;
@@ -98,9 +98,11 @@ pub trait IntervalIterator<E: PartialOrd> {
 	///
 	/// # Warning
 	///
-	/// The implementation decrements the lowest value of `self` and increments
-	/// the largest value of `self`. This could cause a panic if this causes
-	/// overflow in `E`.
+	/// To cut a range of `self`, the implementation takes the predecessor of
+	/// the start, or the successor of the end, of a range of `other`. This
+	/// panics if that value does not exist in `E`. For example, for floating
+	/// point types `f64::MAX` has no successor, although `f64::INFINITY` is a
+	/// larger value.
 	fn diff<O, R>(&self, other: &O) -> R
 	where
 		E: Clone + Adjacent,
@@ -497,7 +499,7 @@ impl<E: PartialOrd> RangeList<E> {
 	///
 	/// # Warning
 	///
-	/// This function will panic if the iterator yields a larger element than
+	/// This function will panic if the iterator yields a smaller element than
 	/// one yielded previously.
 	pub fn from_sorted_elements<T: IntoIterator<Item = E>>(iter: T) -> Self
 	where
@@ -535,8 +537,8 @@ impl<E: PartialOrd> RangeList<E> {
 	///
 	/// # Warning
 	///
-	/// This function will panic if the iterator yields a strictly larger range
-	/// than the previous one.
+	/// This function will panic if the iterator yields a range that starts
+	/// before the (merged) range that precedes it.
 	pub fn from_sorted_ranges<T: IntoIterator<Item = RangeInclusive<E>>>(iter: T) -> Self
 	where
 		E: Adjacent + Clone,
