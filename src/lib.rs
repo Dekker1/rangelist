@@ -18,6 +18,7 @@ mod num_traits;
 use std::{
 	collections::{BTreeSet, HashSet},
 	fmt::{Debug, Display},
+	hash::Hash,
 	iter::{Fuse, Map, Peekable},
 	ops::{Bound, RangeInclusive},
 };
@@ -263,6 +264,17 @@ fn overlap<E: PartialOrd>(r1: &RangeInclusive<E>, r2: &RangeInclusive<E>) -> Ran
 impl<E: Clone + Ord> IntervalIterator<E> for BTreeSet<E> {
 	type IntervalIter = Map<<BTreeSet<E> as IntoIterator>::IntoIter, fn(E) -> RangeInclusive<E>>;
 
+	fn card(&self) -> Option<usize>
+	where
+		E: Step,
+	{
+		Some(self.len())
+	}
+
+	fn contains(&self, elem: &E) -> bool {
+		BTreeSet::contains(self, elem)
+	}
+
 	fn intervals(&self) -> Self::IntervalIter {
 		self.clone().into_iter().map(|e| e.clone()..=e)
 	}
@@ -356,8 +368,19 @@ where
 	}
 }
 
-impl<E: Clone + Ord> IntervalIterator<E> for HashSet<E> {
+impl<E: Clone + Hash + Ord> IntervalIterator<E> for HashSet<E> {
 	type IntervalIter = Map<<Vec<E> as IntoIterator>::IntoIter, fn(E) -> RangeInclusive<E>>;
+
+	fn card(&self) -> Option<usize>
+	where
+		E: Step,
+	{
+		Some(self.len())
+	}
+
+	fn contains(&self, elem: &E) -> bool {
+		HashSet::contains(self, elem)
+	}
 
 	fn intervals(&self) -> Self::IntervalIter {
 		let mut v: Vec<_> = self.iter().cloned().collect();
@@ -423,6 +446,39 @@ where
 }
 
 impl<E: PartialOrd> RangeList<E> {
+	/// Returns `true` if `elem` is contained in the range list.
+	///
+	/// # Examples
+	///
+	/// ```
+	/// # use rangelist::RangeList;
+	/// let rl = RangeList::from_iter([1..=4, 6..=7]);
+	/// assert!(rl.contains(&6));
+	/// assert!(!rl.contains(&5));
+	/// ```
+	pub fn contains(&self, elem: &E) -> bool {
+		// Fast path for elements outside of the bounds of the range list.
+		if self.min().is_none_or(|min| elem < min) || self.max().is_none_or(|max| elem > max) {
+			return false;
+		}
+		let i = self.ranges.partition_point(|(_, end)| end < elem);
+		self.ranges.get(i).is_some_and(|(start, _)| start <= elem)
+	}
+
+	/// Returns the number of elements in the range list, or `None` if it would
+	/// overflow `usize`.
+	fn count(&self) -> Option<usize>
+	where
+		E: Step,
+	{
+		// A dedicated loop, as it is measurably faster than `count_below`.
+		self.ranges.iter().try_fold(0_usize, |count, (start, end)| {
+			count
+				.checked_add(Step::steps_between(start, end)?)?
+				.checked_add(1)
+		})
+	}
+
 	/// Returns the [`Self::position`] pointing at the smallest element greater
 	/// than (or equal to) the given bound.
 	///
@@ -929,6 +985,17 @@ where
 impl<E: PartialOrd + Clone> IntervalIterator<E> for RangeList<E> {
 	type IntervalIter = <RangeList<E> as IntoIterator>::IntoIter;
 
+	fn card(&self) -> Option<usize>
+	where
+		E: Step,
+	{
+		self.count()
+	}
+
+	fn contains(&self, elem: &E) -> bool {
+		RangeList::contains(self, elem)
+	}
+
 	fn intervals(&self) -> Self::IntervalIter {
 		self.clone().into_iter()
 	}
@@ -1413,6 +1480,20 @@ mod tests {
 		let y = RangeList::from(4.0..=9.0);
 		let z: RangeList<_> = x.union(&y);
 		expect!["1.0..9.0"].assert_eq(&z.to_string());
+	}
+
+	#[test]
+	fn test_std_sets() {
+		let b = BTreeSet::from([1, 2, 3, 7]);
+		let h = HashSet::from([7, 3, 2, 1]);
+		let rl = RangeList::from_iter([1..=3, 7..=7]);
+		assert_eq!(IntervalIterator::card(&b), Some(4));
+		assert_eq!(IntervalIterator::card(&h), Some(4));
+		assert!(IntervalIterator::contains(&b, &7) && !IntervalIterator::contains(&b, &4));
+		assert!(IntervalIterator::contains(&h, &7) && !IntervalIterator::contains(&h, &4));
+		assert_eq!(IntervalIterator::union::<_, RangeList<_>>(&b, &h), rl);
+		assert_eq!(rl.intersect::<_, RangeList<_>>(&h), rl);
+		assert!(rl.diff::<_, RangeList<_>>(&b).is_empty());
 	}
 
 	#[test]
