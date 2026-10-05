@@ -18,7 +18,7 @@ mod num_traits;
 use std::{
 	collections::{BTreeSet, HashSet},
 	fmt::{Debug, Display},
-	iter::{Map, Peekable},
+	iter::{Fuse, Map, Peekable},
 	ops::{Bound, RangeInclusive},
 };
 
@@ -177,7 +177,6 @@ pub trait IntervalIterator<E: PartialOrd> {
 	/// Return the set union of two interval iterators.
 	fn union<O, R>(&self, other: &O) -> R
 	where
-		E: Clone,
 		O: IntervalIterator<E>,
 		R: FromIterator<RangeInclusive<E>>,
 	{
@@ -224,9 +223,9 @@ pub struct UnionIter<
 	J: Iterator<Item = RangeInclusive<E>>,
 > {
 	/// Iterator yielding the ranges of the left-hand side of the union
-	lhs: Peekable<I>,
+	lhs: Peekable<Fuse<I>>,
 	/// Iterator yielding the ranges of the right-hand side of the union
-	rhs: Peekable<J>,
+	rhs: Peekable<Fuse<J>>,
 }
 
 /// Extends `cur` to cover `next` if `next`, which must not start before `cur`,
@@ -957,7 +956,7 @@ impl<'a, E: PartialOrd> IntoIterator for &'a RangeList<E> {
 	}
 }
 
-impl<E: Clone + PartialOrd, I, J> UnionIter<E, I, J>
+impl<E: PartialOrd, I, J> UnionIter<E, I, J>
 where
 	I: Iterator<Item = RangeInclusive<E>>,
 	J: Iterator<Item = RangeInclusive<E>>,
@@ -965,8 +964,8 @@ where
 	/// Create a new [`UnionIter`] from two iterators yielding ordered ranges.
 	pub fn from_iters(lhs: I, rhs: J) -> Self {
 		Self {
-			lhs: lhs.peekable(),
-			rhs: rhs.peekable(),
+			lhs: lhs.fuse().peekable(),
+			rhs: rhs.fuse().peekable(),
 		}
 	}
 
@@ -981,7 +980,7 @@ where
 	}
 }
 
-impl<E: PartialOrd + Clone, I, J> Iterator for UnionIter<E, I, J>
+impl<E: PartialOrd, I, J> Iterator for UnionIter<E, I, J>
 where
 	I: Iterator<Item = RangeInclusive<E>>,
 	J: Iterator<Item = RangeInclusive<E>>,
@@ -989,53 +988,29 @@ where
 	type Item = RangeInclusive<E>;
 
 	fn next(&mut self) -> Option<Self::Item> {
-		match (self.lhs.peek(), self.rhs.peek()) {
-			(Some(l), None) => {
-				let v = l.clone();
-				let _ = self.lhs.next();
-				Some(v)
+		let (Some(l), Some(r)) = (self.lhs.peek(), self.rhs.peek()) else {
+			// At most one side has ranges left, which can be yielded as is.
+			return self.lhs.next().or_else(|| self.rhs.next());
+		};
+		match overlap(l, r) {
+			RangeOrdering::Less => self.lhs.next(),
+			RangeOrdering::Greater => self.rhs.next(),
+			RangeOrdering::Overlap => {
+				let (l_start, l_end) = self.lhs.next()?.into_inner();
+				let (r_start, r_end) = self.rhs.next()?.into_inner();
+				let start = min(l_start, r_start);
+				let mut end = max(l_end, r_end);
+				// The ranges are ordered, so a following range overlaps if it
+				// starts at or before `end`.
+				while let Some(next) = self
+					.lhs
+					.next_if(|r| *r.start() <= end)
+					.or_else(|| self.rhs.next_if(|r| *r.start() <= end))
+				{
+					end = max(end, next.into_inner().1);
+				}
+				Some(start..=end)
 			}
-			(None, Some(r)) => {
-				let v = r.clone();
-				let _ = self.rhs.next();
-				Some(v)
-			}
-			(Some(l), Some(r)) => match overlap(l, r) {
-				RangeOrdering::Less => {
-					let v = l.clone();
-					let _ = self.lhs.next();
-					Some(v)
-				}
-				RangeOrdering::Greater => {
-					let v = r.clone();
-					let _ = self.rhs.next();
-					Some(v)
-				}
-				RangeOrdering::Overlap => {
-					let mut ext = min(l.start(), r.start()).clone()..=max(l.end(), r.end()).clone();
-					let _ = self.lhs.next();
-					let _ = self.rhs.next();
-					loop {
-						if let Some(l) = self.lhs.peek()
-							&& overlap(&ext, l) == RangeOrdering::Overlap
-						{
-							ext = ext.start().clone()..=max(ext.end(), l.end()).clone();
-							let _ = self.lhs.next();
-							continue;
-						}
-						if let Some(r) = self.rhs.peek()
-							&& overlap(&ext, r) == RangeOrdering::Overlap
-						{
-							ext = ext.start().clone()..=max(ext.end(), r.end()).clone();
-							let _ = self.rhs.next();
-							continue;
-						}
-						break;
-					}
-					Some(ext)
-				}
-			},
-			(None, None) => None,
 		}
 	}
 }
@@ -1438,5 +1413,18 @@ mod tests {
 		let y = RangeList::from(4.0..=9.0);
 		let z: RangeList<_> = x.union(&y);
 		expect!["1.0..9.0"].assert_eq(&z.to_string());
+	}
+
+	#[test]
+	fn test_union_iter_exhausted() {
+		// An exhausted side must not be polled again.
+		let mut done = false;
+		let lhs = std::iter::from_fn(move || {
+			assert!(!done, "exhausted iterator was polled again");
+			done = true;
+			None
+		});
+		let union = UnionIter::from_iters(lhs, [1..=2, 4..=5].into_iter());
+		assert_eq!(union.collect::<Vec<_>>(), vec![1..=2, 4..=5]);
 	}
 }
