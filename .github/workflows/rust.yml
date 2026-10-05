@@ -49,3 +49,12 @@ jobs:
           components: rustfmt
       - name: Run rustfmt
         run: cargo fmt --all --check
+
+  item-sort:
+    name: Item sort
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+      - name: Check item order
+        uses: Dekker1/rust-item-sort@v0
