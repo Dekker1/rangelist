@@ -479,18 +479,33 @@ impl<E: PartialOrd> RangeList<E> {
 		})
 	}
 
-	/// Returns the [`Self::position`] pointing at the smallest element greater
-	/// than (or equal to) the given bound.
+	/// Returns the number of elements that are smaller than `elem`, or smaller
+	/// than or equal to `elem` if `inclusive` is set.
 	///
-	/// Passing `Bound::Included(x)` will return the position of the smallest
-	/// element greater than or equal to `x`, or `None` if all elements are
-	/// smaller than `x`.
+	/// Returns `None` if the count would overflow `usize`.
+	fn count_below(&self, elem: &E, inclusive: bool) -> Option<usize>
+	where
+		E: Step,
+	{
+		let (count, found) = self.locate(elem)?;
+		count.checked_add(usize::from(found && inclusive))
+	}
+
+	/// Returns the position of the gap before the smallest element greater than
+	/// (or equal to) the given bound, following the model of
+	/// [`BTreeMap::lower_bound`](std::collections::BTreeMap::lower_bound)
+	/// (currently unstable).
 	///
-	/// Passing `Bound::Excluded(x)` will return the position of the smallest
-	/// element greater than `x`, or `None` if all elements are smaller than or
-	/// equal to `x`.
+	/// The position of a gap is the number of elements before it. As such, the
+	/// result is the [`Self::position`] of the smallest element that satisfies
+	/// the bound, or the number of elements in the range list if no such
+	/// element exists.
 	///
-	/// Passing `Bound::Unbounded` will return `None`.
+	/// Passing `Bound::Included(x)` returns the number of elements smaller than
+	/// `x`, `Bound::Excluded(x)` returns the number of elements smaller than or
+	/// equal to `x`, and `Bound::Unbounded` returns `0`.
+	///
+	/// Returns `None` if the position would overflow `usize`.
 	///
 	/// # Examples
 	///
@@ -498,46 +513,26 @@ impl<E: PartialOrd> RangeList<E> {
 	/// # use rangelist::RangeList;
 	/// # use std::ops::Bound;
 	/// let rl = RangeList::from_iter([1..=4, 6..=8]);
+	/// assert_eq!(rl.first_position_bound(&Bound::Unbounded), Some(0));
 	/// assert_eq!(rl.first_position_bound(&Bound::Included(-1)), Some(0));
 	/// assert_eq!(rl.first_position_bound(&Bound::Included(1)), Some(0));
 	/// assert_eq!(rl.first_position_bound(&Bound::Excluded(1)), Some(1));
 	/// assert_eq!(rl.first_position_bound(&Bound::Included(4)), Some(3));
 	/// assert_eq!(rl.first_position_bound(&Bound::Excluded(4)), Some(4));
+	/// assert_eq!(rl.first_position_bound(&Bound::Included(5)), Some(4));
 	/// assert_eq!(rl.first_position_bound(&Bound::Included(8)), Some(6));
-	///
-	/// assert_eq!(rl.first_position_bound(&Bound::Included(9)), None);
+	/// assert_eq!(rl.first_position_bound(&Bound::Excluded(8)), Some(7));
+	/// assert_eq!(rl.first_position_bound(&Bound::Included(9)), Some(7));
 	/// ```
 	pub fn first_position_bound(&self, bound: &Bound<E>) -> Option<usize>
 	where
-		E: Clone + Step,
+		E: Step,
 	{
-		let elem = match bound {
-			Bound::Included(x) => x,
-			Bound::Excluded(x) => x,
-			Bound::Unbounded => {
-				return None;
-			}
-		};
-		let mut pos = 0;
-		let card = self.card()?;
-		for (start, end) in &self.ranges {
-			if elem < start {
-				return Some(pos);
-			}
-			if elem <= end {
-				pos += Step::steps_between(start, elem)?;
-				match bound {
-					Bound::Excluded(_) if pos > card => return None,
-					Bound::Excluded(_) => pos += 1,
-					_ => {}
-				}
-				debug_assert!(pos <= card);
-				return Some(pos);
-			}
-			pos += Step::steps_between(start, end)? + 1;
+		match bound {
+			Bound::Included(x) => self.count_below(x, false),
+			Bound::Excluded(x) => self.count_below(x, true),
+			Bound::Unbounded => Some(0),
 		}
-		debug_assert_eq!(pos, self.card().unwrap());
-		None
 	}
 
 	/// Construct a [`RangeList`] from an iterator of elements in any order,
@@ -660,18 +655,23 @@ impl<E: PartialOrd> RangeList<E> {
 		self.into_iter().map(|r| **r.start()..=**r.end())
 	}
 
-	/// Returns the [`Self::position`] pointing at the largest element smaller
-	/// than (or equal to) the given bound.
+	/// Returns the position of the gap after the largest element smaller than
+	/// (or equal to) the given bound, following the model of
+	/// [`BTreeMap::upper_bound`](std::collections::BTreeMap::upper_bound)
+	/// (currently unstable).
 	///
-	/// Passing `Bound::Included(x)` will return the position of the largest
-	/// element smaller than or equal to `x`, or `None` if all elements are
-	/// larger `x`.
+	/// The position of a gap is the number of elements before it. As such, the
+	/// result is one more than the [`Self::position`] of the largest element
+	/// that satisfies the bound, or `0` if no such element exists. The elements
+	/// between two bounds are at the positions
+	/// `first_position_bound(lo)..last_position_bound(hi)`.
 	///
-	/// Passing `Bound::Excluded(x)` will return the position of the largest
-	/// element smaller than `x`, or `None` if all elements are larger than or
-	/// equal to `x`.
+	/// Passing `Bound::Included(x)` returns the number of elements smaller than
+	/// or equal to `x`, `Bound::Excluded(x)` returns the number of elements
+	/// smaller than `x`, and `Bound::Unbounded` returns the number of elements
+	/// in the range list.
 	///
-	/// Passing `Bound::Unbounded` will return `None`.
+	/// Returns `None` if the position would overflow `usize`.
 	///
 	/// # Examples
 	///
@@ -679,52 +679,50 @@ impl<E: PartialOrd> RangeList<E> {
 	/// # use rangelist::RangeList;
 	/// # use std::ops::Bound;
 	/// let rl = RangeList::from_iter([1..=4, 6..=8]);
-	/// assert_eq!(rl.last_position_bound(&Bound::Included(1)), Some(0));
-	/// assert_eq!(rl.last_position_bound(&Bound::Included(4)), Some(3));
-	/// assert_eq!(rl.last_position_bound(&Bound::Excluded(4)), Some(2));
+	/// assert_eq!(rl.last_position_bound(&Bound::Unbounded), Some(7));
+	/// assert_eq!(rl.last_position_bound(&Bound::Included(-1)), Some(0));
+	/// assert_eq!(rl.last_position_bound(&Bound::Excluded(1)), Some(0));
+	/// assert_eq!(rl.last_position_bound(&Bound::Included(1)), Some(1));
+	/// assert_eq!(rl.last_position_bound(&Bound::Excluded(4)), Some(3));
+	/// assert_eq!(rl.last_position_bound(&Bound::Included(4)), Some(4));
+	/// assert_eq!(rl.last_position_bound(&Bound::Included(5)), Some(4));
+	/// assert_eq!(rl.last_position_bound(&Bound::Excluded(6)), Some(4));
 	/// assert_eq!(rl.last_position_bound(&Bound::Included(9)), Some(7));
 	/// assert_eq!(rl.last_position_bound(&Bound::Excluded(9)), Some(7));
-	///
-	/// assert_eq!(rl.last_position_bound(&Bound::Included(-1)), None);
-	/// assert_eq!(rl.last_position_bound(&Bound::Excluded(1)), None);
 	/// ```
 	pub fn last_position_bound(&self, bound: &Bound<E>) -> Option<usize>
 	where
-		E: Clone + Step,
+		E: Step,
 	{
-		let mut pos = self.card()?;
-		let lb = self.min()?;
-		let elem = match bound {
-			Bound::Included(x) => {
-				if x < lb {
-					return None;
-				}
-				x
-			}
-			Bound::Excluded(x) => {
-				if x <= lb {
-					return None;
-				}
-				x
-			}
-			Bound::Unbounded => {
-				return None;
-			}
-		};
-		for (start, end) in self.ranges.iter().rev() {
-			if elem > end {
-				return Some(pos);
-			}
-			if elem >= start {
-				pos -= Step::steps_between(elem, end)? + 1;
-				if matches!(bound, Bound::Excluded(_)) {
-					pos -= 1;
-				}
-				return Some(pos);
-			}
-			pos -= Step::steps_between(start, end)? + 1;
+		match bound {
+			Bound::Included(x) => self.count_below(x, true),
+			Bound::Excluded(x) => self.count_below(x, false),
+			Bound::Unbounded => self.count(),
 		}
-		unreachable!()
+	}
+
+	/// Returns the number of elements that are smaller than `elem`, and
+	/// whether `elem` is contained in the range list.
+	///
+	/// Returns `None` if the count would overflow `usize`.
+	fn locate(&self, elem: &E) -> Option<(usize, bool)>
+	where
+		E: Step,
+	{
+		let mut count: usize = 0;
+		for (start, end) in &self.ranges {
+			if elem < start {
+				break;
+			}
+			if elem <= end {
+				let count = count.checked_add(Step::steps_between(start, elem)?)?;
+				return Some((count, true));
+			}
+			count = count
+				.checked_add(Step::steps_between(start, end)?)?
+				.checked_add(1)?;
+		}
+		Some((count, false))
 	}
 
 	/// Returns the lower bound of the range list, or `None` if the range list
@@ -784,18 +782,8 @@ impl<E: PartialOrd> RangeList<E> {
 	where
 		E: Step,
 	{
-		let mut pos = 0;
-		for (start, end) in &self.ranges {
-			if elem < start {
-				return None;
-			}
-			if elem <= end {
-				let elems = Step::steps_between(start, elem)?;
-				return Some(pos + elems);
-			}
-			pos += Step::steps_between(start, end)? + 1;
-		}
-		None
+		let (pos, found) = self.locate(elem)?;
+		found.then_some(pos)
 	}
 
 	/// Tightens the lower bound of the range list, removing any (partial)
@@ -1173,6 +1161,49 @@ mod tests {
 		#[expect(clippy::reversed_empty_ranges, reason = "testing empty ranges")]
 		let rl_empty = RangeList::from_sorted_ranges([3..=2, 9..=7]);
 		assert!(rl_empty.is_empty());
+	}
+
+	#[test]
+	fn test_position_bounds() {
+		let empty = RangeList::<i64>::default();
+		assert_eq!(empty.first_position_bound(&Bound::Included(1)), Some(0));
+		assert_eq!(empty.last_position_bound(&Bound::Unbounded), Some(0));
+
+		// The bounds give the half-open range of positions of the elements
+		// that they select.
+		let rl = RangeList::from_iter([1..=4, 6..=8]);
+		let positions =
+			|lo, hi| rl.first_position_bound(&lo).unwrap()..rl.last_position_bound(&hi).unwrap();
+		assert_eq!(positions(Bound::Unbounded, Bound::Unbounded), 0..7);
+		assert_eq!(positions(Bound::Included(4), Bound::Included(6)), 3..5);
+		assert_eq!(positions(Bound::Excluded(4), Bound::Excluded(6)), 4..4);
+		assert_eq!(positions(Bound::Included(5), Bound::Included(5)), 4..4);
+		assert_eq!(positions(Bound::Excluded(8), Bound::Included(9)), 7..7);
+
+		// The bounds agree with `position` for every value.
+		for x in -1..=10 {
+			let before = rl.first_position_bound(&Bound::Included(x)).unwrap();
+			let after = rl.last_position_bound(&Bound::Included(x)).unwrap();
+			assert_eq!(rl.last_position_bound(&Bound::Excluded(x)), Some(before));
+			assert_eq!(rl.first_position_bound(&Bound::Excluded(x)), Some(after));
+			if rl.contains(&x) {
+				assert_eq!(rl.position(&x), Some(before));
+				assert_eq!(after, before + 1);
+			} else {
+				assert_eq!(rl.position(&x), None);
+				assert_eq!(after, before);
+			}
+		}
+
+		// Positions do not depend on the cardinality fitting in `usize`.
+		let full = RangeList::from(0_u64..=u64::MAX);
+		assert_eq!(full.first_position_bound(&Bound::Included(5)), Some(5));
+		assert_eq!(
+			full.last_position_bound(&Bound::Excluded(u64::MAX)),
+			Some(usize::MAX)
+		);
+		assert_eq!(full.last_position_bound(&Bound::Included(u64::MAX)), None);
+		assert_eq!(full.last_position_bound(&Bound::Unbounded), None);
 	}
 
 	#[test]
