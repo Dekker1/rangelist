@@ -229,6 +229,17 @@ pub struct UnionIter<
 	rhs: Peekable<J>,
 }
 
+/// Extends `cur` to cover `next` if `next`, which must not start before `cur`,
+/// overlaps with or is adjacent to it. Returns whether `next` was absorbed.
+fn absorb<E: Adjacent + PartialOrd>(cur: &mut (E, E), next: &mut (E, E)) -> bool {
+	let merge = cur.1 >= next.0 || cur.1.successor().is_some_and(|succ| next.0 <= succ);
+	// `next` may be fully contained in `cur`, so keep the larger end.
+	if merge && next.1 > cur.1 {
+		std::mem::swap(&mut cur.1, &mut next.1);
+	}
+	merge
+}
+
 /// Returns the maximum of two values that implement PartialOrd
 fn max<E: PartialOrd>(a: E, b: E) -> E {
 	if a > b { a } else { b }
@@ -541,29 +552,22 @@ impl<E: PartialOrd> RangeList<E> {
 	/// before the (merged) range that precedes it.
 	pub fn from_sorted_ranges<T: IntoIterator<Item = RangeInclusive<E>>>(iter: T) -> Self
 	where
-		E: Adjacent + Clone,
+		E: Adjacent,
 	{
-		let mut it = iter.into_iter();
+		let mut it = iter
+			.into_iter()
+			.filter(|r| !r.is_empty())
+			.map(RangeInclusive::into_inner);
 		let mut ranges = Vec::new();
-		let Some(mut cur) = it.next().map(|r| (r.start().clone(), r.end().clone())) else {
+		let Some(mut cur) = it.next() else {
 			return Self::default();
 		};
-		for next in it {
-			if next.start() < &cur.0 {
+		for mut next in it {
+			if next.0 < cur.0 {
 				panic!("ranges must be yielded in sorted order");
 			}
-			let next = (next.start().clone(), next.end().clone());
-			// Merge the ranges if they overlap, or if they are adjacent (the
-			// successor of the current end reaches the start of the next
-			// range).
-			let adjacent = cur.1.successor().is_some_and(|succ| next.0 <= succ);
-			if cur.1 >= next.0 || adjacent {
-				// `next` may be fully contained in `cur`, so keep the larger
-				// end.
-				cur.1 = max(cur.1, next.1)
-			} else {
-				ranges.push(cur);
-				cur = next;
+			if !absorb(&mut cur, &mut next) {
+				ranges.push(std::mem::replace(&mut cur, next));
 			}
 		}
 		ranges.push(cur);
@@ -1122,6 +1126,11 @@ mod tests {
 
 		// Empty iterator returns empty/default RangeList.
 		let rl_empty: RangeList<f64> = RangeList::from_sorted_ranges([]);
+		assert!(rl_empty.is_empty());
+
+		// Empty ranges are ignored.
+		#[expect(clippy::reversed_empty_ranges, reason = "testing empty ranges")]
+		let rl_empty = RangeList::from_sorted_ranges([3..=2, 9..=7]);
 		assert!(rl_empty.is_empty());
 	}
 
