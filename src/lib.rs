@@ -910,21 +910,40 @@ impl<E: Clone + PartialOrd> From<RangeInclusive<E>> for RangeList<E> {
 
 impl<E, R> FromIterator<R> for RangeList<E>
 where
-	E: Adjacent + Clone + PartialOrd,
+	E: Adjacent + PartialOrd,
 	R: Into<RangeInclusive<E>>,
 {
 	fn from_iter<T: IntoIterator<Item = R>>(iter: T) -> Self {
-		let mut non_empty: Vec<RangeInclusive<E>> = iter
+		let iter = iter
 			.into_iter()
-			.map(|r| r.into())
+			.map(Into::<RangeInclusive<E>>::into)
 			.filter(|r| !r.is_empty())
-			.collect();
-		non_empty.sort_by(|a, b| {
-			a.start()
-				.partial_cmp(b.start())
-				.expect("the order of the bounds in the RangeList cannot be partial")
-		});
-		Self::from_sorted_ranges(non_empty)
+			.map(RangeInclusive::into_inner);
+		// Merge overlapping and adjacent ranges while the input is in order.
+		let mut ranges: Vec<(E, E)> = Vec::new();
+		let mut sorted = true;
+		for mut next in iter {
+			match ranges.last_mut() {
+				Some(cur) if sorted && next.0 >= cur.0 => {
+					if !absorb(cur, &mut next) {
+						ranges.push(next);
+					}
+				}
+				Some(_) => {
+					sorted = false;
+					ranges.push(next);
+				}
+				None => ranges.push(next),
+			}
+		}
+		if !sorted {
+			ranges.sort_unstable_by(|a, b| {
+				a.0.partial_cmp(&b.0)
+					.expect("the order of the bounds in the RangeList cannot be partial")
+			});
+			ranges.dedup_by(|next, cur| absorb(cur, next));
+		}
+		Self { ranges }
 	}
 }
 
@@ -1186,6 +1205,10 @@ mod tests {
 		assert!(!multi_range.contains(&5));
 		assert!(!multi_range.contains(&-6));
 		assert!(!multi_range.contains(&8));
+
+		// A range that is fully contained in another must not shrink it.
+		let contained = RangeList::from_iter([2..=3, 1..=10, 1..=4, 12..=12, 5..=6]);
+		assert_eq!(contained.iter().collect::<Vec<_>>(), vec![1..=10, 12..=12]);
 
 		let collapse_range = RangeList::from_iter([1..=2, 2..=3, 10..=12, 11..=15]);
 		expect![[r#"
